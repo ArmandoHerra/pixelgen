@@ -3,6 +3,7 @@
 import errno
 import hashlib
 import os
+import re
 import subprocess
 import sys
 
@@ -29,6 +30,7 @@ from pixelgen.errors import (
 from pixelgen.export import load_sidecar
 from pixelgen.palettes import load_palette
 from pixelgen.pixelate import grid_to_rgba, pixelate
+from pixelgen.spec import ArtSpec
 
 runner = CliRunner()
 
@@ -237,7 +239,7 @@ def test_dims_scale_zero_is_a_usage_error(h):
         (["--palette", "nope"], ["nope", "pico8"]),
         (["--preset", "nope"], ["unknown preset", "gameboy"]),
         (["--dither", "sparkle"], ["invalid spec", "dither"]),
-        (["--size", "7"], ["invalid spec", "width"]),
+        (["--size", "7"], ["--size must be between 8 and 128"]),
     ],
 )
 def test_usage_values_fail_with_exit_2_before_any_llm_call(h, flags, fragments):
@@ -583,3 +585,121 @@ def test_diffusion_or_backend_refusal_with_key_never_calls_make_llm(h):
     assert_clean_failure(result, EXIT_RUNTIME, "diffusion")
     assert h.make_llm_calls == 0
     assert h.llm.call_count == 0
+
+
+# --- PXG-21 ---------------------------------------------------------------------------------
+
+_SIZE_GE = next(m.ge for m in ArtSpec.model_fields["width"].metadata if hasattr(m, "ge"))
+_SIZE_LE = next(m.le for m in ArtSpec.model_fields["width"].metadata if hasattr(m, "le"))
+
+
+def _range_line(flag):
+    return f"pixelgen: error: {flag} must be between {_SIZE_GE} and {_SIZE_LE}"
+
+
+def test_oserror_target_named_when_preview_target_is_a_directory(h):
+    (h.tmp / "out" / "x@8x.png").mkdir(parents=True)
+    result = h.run(["a red apple", "--size", "16", "-o", "out/x.png"], {}, {"grid": _grid()})
+    line = assert_clean_failure(result, EXIT_RUNTIME)
+    assert "x@8x.png'" in line and ".tmp" not in line
+    assert list((h.tmp / "out").glob("*.tmp")) == []
+
+
+def test_oserror_target_named_when_last_json_is_a_directory(h, monkeypatch):
+    home = h.tmp / "phome"
+    (home / "last.json").mkdir(parents=True)
+    monkeypatch.setenv("PIXELGEN_HOME", str(home))
+    result = h.run(["a red apple", "--size", "16"], {}, {"grid": _grid()})
+    line = assert_clean_failure(result, EXIT_RUNTIME)
+    assert "last.json'" in line and ".tmp" not in line
+    out = h.tmp / "out"
+    for name in ("a-red-apple.png", "a-red-apple@8x.png", "a-red-apple.json"):
+        assert (out / name).exists()
+    assert list(home.glob("*.tmp")) == [] and list(out.glob("*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    ("exc", "expect", "absent"),
+    [
+        (
+            OSError(errno.EISDIR, "Is a directory", "d/.t.png.ab.tmp", None, "d/t.png"),
+            "'d/t.png'",
+            ".tmp",
+        ),
+        (OSError(errno.EISDIR, "Is a directory", "d/only.png"), "'d/only.png'", None),
+        (
+            OSError(errno.EISDIR, "Is a directory"),
+            "pixelgen: error: Is a directory",
+            "cannot access",
+        ),
+    ],
+)
+def test_oserror_line_prefers_filename2(exc, expect, absent):
+    line = cli._oserror_line(exc)
+    assert expect in line
+    if absent:
+        assert absent not in line
+
+
+@pytest.mark.parametrize("value", ["7", "0", "-5", "129"])
+def test_size_range_error_names_the_range(h, value):
+    result = h.run(["x", "--size", value], {}, {"grid": _grid()}, key=False)
+    line = assert_clean_failure(result, EXIT_USAGE)
+    assert line == _range_line("--size")
+    assert h.make_llm_calls == 0 and h.llm.call_count == 0
+    assert not (h.tmp / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("flags", "flag"),
+    [
+        (["--width", "200"], "--width"),
+        (["--height", "7"], "--height"),
+        (["--width", "7", "--height", "200"], "--width"),
+    ],
+)
+def test_size_range_width_height_name_their_flag(h, flags, flag):
+    result = h.run(["x", *flags], {}, {"grid": _grid()}, key=False)
+    line = assert_clean_failure(result, EXIT_USAGE)
+    assert line == _range_line(flag)
+
+
+def test_size_range_huge_integer_is_not_echoed(h):
+    result = h.run(["x", "--size", "99999999999999999999999"], {}, key=False)
+    line = assert_clean_failure(result, EXIT_USAGE)
+    assert line == _range_line("--size")
+    assert "99999" not in result.stdout and "99999" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "flags", [["--size", "8"], ["--size", "128"], ["--width", "128", "--height", "8"]]
+)
+def test_size_range_bounds_are_inclusive(h, flags):
+    result = h.run(["x", *flags], {}, key=False)
+    assert result.exit_code == EXIT_RUNTIME, (result.stdout, result.stderr)
+    assert "ANTHROPIC_API_KEY" in result.stderr
+
+
+def test_size_help_shows_the_range():
+    command = typer.main.get_command(cli.app).commands["generate"]
+    params = {p.name: p for p in command.params}
+    for name in ("size", "width", "height"):
+        assert "(8-128)" in params[name].help
+    result = runner.invoke(cli.app, ["generate", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1"})
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert text.count("(8-128)") == 3
+    assert text.count("(1-64)") == 1
+
+
+def test_size_bounds_come_from_artspec():
+    import pixelgen.spec as spec_mod
+
+    for field in ("width", "height"):
+        meta = ArtSpec.model_fields[field].metadata
+        assert spec_mod.SIZE_MIN == next(m.ge for m in meta if hasattr(m, "ge"))
+        assert spec_mod.SIZE_MAX == next(m.le for m in meta if hasattr(m, "le"))
+    from pathlib import Path
+
+    src = Path(cli.__file__).read_text()
+    assert len(re.findall(r"\b128\b", src)) == 1
+    assert len(re.findall(r"\b128\b", Path(spec_mod.__file__).read_text())) == 4

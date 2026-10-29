@@ -3,7 +3,7 @@
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -78,11 +78,15 @@ def _width_bound(attr: Literal["ge", "le"]) -> int:
     raise RuntimeError("ArtSpec.width lost its bound")  # pragma: no cover
 
 
+SIZE_MIN: Final[int] = _width_bound("ge")
+SIZE_MAX: Final[int] = _width_bound("le")
+
+
 @dataclass(frozen=True)
 class InferConstraints:
     palette_names: tuple[str, ...]
-    size_min: int = _width_bound("ge")
-    size_max: int = _width_bound("le")
+    size_min: int = SIZE_MIN
+    size_max: int = SIZE_MAX
 
 
 @dataclass(frozen=True)

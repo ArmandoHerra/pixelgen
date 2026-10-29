@@ -18,7 +18,7 @@ from pixelgen import __version__, palettes, pipeline, presets
 from pixelgen.backends.base import available_backends
 from pixelgen.errors import MissingAPIKeyError, PixelgenError, SpecError
 from pixelgen.llm import AnthropicLLM
-from pixelgen.spec import ArtSpec
+from pixelgen.spec import SIZE_MAX, SIZE_MIN, ArtSpec
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
@@ -45,8 +45,9 @@ def _error_line(exc: PixelgenError) -> str:
 
 def _oserror_line(exc: OSError) -> str:
     reason = _collapse(exc.strerror or "") or type(exc).__name__
-    if exc.filename is not None:
-        return f"pixelgen: error: cannot access '{_collapse(str(exc.filename))}': {reason}"
+    path = exc.filename2 if exc.filename2 is not None else exc.filename
+    if path is not None:
+        return f"pixelgen: error: cannot access '{_collapse(str(path))}': {reason}"
     return f"pixelgen: error: {reason}"
 
 
@@ -237,9 +238,15 @@ def _print_spec(spec: ArtSpec) -> None:
 @error_boundary
 def generate(
     prompt: str = typer.Argument(..., help="What to draw, in plain language."),
-    size: int | None = typer.Option(None, "--size", help="Width and height in pixels."),
-    width: int | None = typer.Option(None, "--width", help="Width in pixels."),
-    height: int | None = typer.Option(None, "--height", help="Height in pixels."),
+    size: int | None = typer.Option(
+        None, "--size", help=f"Width and height in pixels ({SIZE_MIN}-{SIZE_MAX})."
+    ),
+    width: int | None = typer.Option(
+        None, "--width", help=f"Width in pixels ({SIZE_MIN}-{SIZE_MAX})."
+    ),
+    height: int | None = typer.Option(
+        None, "--height", help=f"Height in pixels ({SIZE_MIN}-{SIZE_MAX})."
+    ),
     palette: str | None = typer.Option(None, "--palette", help="Palette name."),
     preset: str | None = typer.Option(None, "--preset", help="Style preset name."),
     dither: str | None = typer.Option(None, "--dither", help="none, floyd-steinberg or bayer."),
@@ -260,6 +267,9 @@ def generate(
             usage_error("prompt is empty")
         if size is not None and (width is not None or height is not None):
             usage_error("--size cannot be combined with --width or --height")
+        for flag, value in (("--size", size), ("--width", width), ("--height", height)):
+            if value is not None and not SIZE_MIN <= value <= SIZE_MAX:
+                usage_error(f"{flag} must be between {SIZE_MIN} and {SIZE_MAX}")
         if not SCALE_MIN <= scale <= SCALE_MAX:
             usage_error(f"--scale must be between {SCALE_MIN} and {SCALE_MAX}")
         if backend not in available_backends():
