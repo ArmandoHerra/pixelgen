@@ -1,14 +1,36 @@
 """Command-line entry point. Later specs add verbs with ``@app.command()``."""
 
-from typing import Any
+import functools
+import os
+import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Annotated, Any, NoReturn, ParamSpec, TypeVar
 
 import typer
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from pixelgen import __version__, palettes, presets
+from pixelgen import __version__, palettes, pipeline, presets
+from pixelgen.backends.base import available_backends
+from pixelgen.errors import MissingAPIKeyError, PixelgenError
+from pixelgen.llm import AnthropicLLM
 from pixelgen.spec import ArtSpec
+
+EXIT_OK = 0
+EXIT_RUNTIME = 1
+EXIT_USAGE = 2
+
+SCALE_MIN = 1
+SCALE_MAX = 64
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+# The LLM seam: tests monkeypatch ``pixelgen.cli.make_llm``.
+make_llm = AnthropicLLM.from_env
 
 app = typer.Typer(
     name="pixelgen",
@@ -16,6 +38,61 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def _collapse(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _error_line(exc: PixelgenError) -> str:
+    text = _collapse(str(exc)) or _collapse(getattr(exc, "default_message", ""))
+    return f"pixelgen: error: {text or type(exc).__name__}"
+
+
+def _fail(line: str, code: int) -> NoReturn:
+    typer.echo(line, err=True)
+    raise typer.Exit(code)
+
+
+def usage_error(message: str) -> NoReturn:
+    """Reject the user's input (exit 2) before anything ran or any money was spent."""
+    _fail(f"pixelgen: error: {_collapse(message)}", EXIT_USAGE)
+
+
+@contextmanager
+def usage_phase() -> Iterator[None]:
+    """Any PixelgenError raised inside is a usage error (exit 2): the phase decides."""
+    try:
+        yield
+    except PixelgenError as exc:
+        _fail(_error_line(exc), EXIT_USAGE)
+
+
+def error_boundary(func: Callable[P, R]) -> Callable[P, R]:
+    """Turn any PixelgenError into one stderr line and exit 1; never a traceback."""
+
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return func(*args, **kwargs)
+        except PixelgenError as exc:
+            _fail(_error_line(exc), EXIT_RUNTIME)
+
+    return wrapper
+
+
+def _require_api_key() -> None:
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        raise MissingAPIKeyError()
+
+
+def print_summary(result: pipeline.PipelineResult) -> None:
+    out = result.export
+    spec = result.spec
+    typer.echo(
+        f"Wrote {out.png_path} ({spec.width}\u00d7{spec.height}), "
+        f"preview {out.preview_path}, sidecar {out.sidecar_path}"
+    )
 
 
 def _version_callback(value: bool) -> None:
@@ -56,6 +133,7 @@ def _swatch_text(colours: Any) -> Text:
 
 
 @app.command("palettes")
+@error_boundary
 def palettes_command() -> None:
     """List the built-in palettes with colour counts and swatches."""
     table = Table()
@@ -84,6 +162,7 @@ def _format_value(value: Any) -> str:
 
 
 @app.command("presets")
+@error_boundary
 def presets_command() -> None:
     """List the built-in style presets and every setting each one applies."""
     console = _console()
@@ -95,3 +174,78 @@ def presets_command() -> None:
                 line = f"  {key}: {_format_value(settings[key])}"
                 console.print(line, markup=False, highlight=False, soft_wrap=True)
         console.print()
+
+
+def _print_spec(spec: ArtSpec) -> None:
+    table = Table(title="Resolved spec")
+    table.add_column("Field", no_wrap=True)
+    table.add_column("Value")
+    for key in ArtSpec.model_fields:
+        table.add_row(key, _format_value(getattr(spec, key)))
+    _console().print(table)
+
+
+@app.command("generate")
+@error_boundary
+def generate(
+    prompt: str = typer.Argument(..., help="What to draw, in plain language."),
+    size: int | None = typer.Option(None, "--size", help="Width and height in pixels."),
+    width: int | None = typer.Option(None, "--width", help="Width in pixels."),
+    height: int | None = typer.Option(None, "--height", help="Height in pixels."),
+    palette: str | None = typer.Option(None, "--palette", help="Palette name."),
+    preset: str | None = typer.Option(None, "--preset", help="Style preset name."),
+    dither: str | None = typer.Option(None, "--dither", help="none, floyd-steinberg or bayer."),
+    outline: bool | None = typer.Option(None, "--outline/--no-outline", help="Draw an outline."),
+    background: str | None = typer.Option(None, "--background", help="transparent or solid."),
+    view: str | None = typer.Option(None, "--view", help="front, side, top-down or isometric."),
+    seed: int | None = typer.Option(None, "--seed", help="Seed recorded in the spec."),
+    scale: int = typer.Option(8, "--scale", help="Preview upscale factor (1-64)."),
+    output: Annotated[
+        Path | None, typer.Option("-o", "--output", help="Output path (overwrites).")
+    ] = None,
+    backend: str = typer.Option("llm-grid", "--backend", help="Generator backend."),
+    show_spec: bool = typer.Option(False, "--show-spec", help="Print the resolved spec first."),
+) -> None:
+    """Generate pixel art from PROMPT."""
+    with usage_phase():
+        if size is not None and (width is not None or height is not None):
+            usage_error("--size cannot be combined with --width or --height")
+        if not SCALE_MIN <= scale <= SCALE_MAX:
+            usage_error(f"--scale must be between {SCALE_MIN} and {SCALE_MAX}")
+        if backend not in available_backends():
+            usage_error(
+                f"unknown backend '{backend}'; available: {', '.join(available_backends())}"
+            )
+        if output is not None and output.is_dir():
+            usage_error(f"--output '{output}' is a directory; pass a file path")
+        if size is not None:
+            width = height = size
+        cli_overrides: dict[str, Any] = {
+            "width": width,
+            "height": height,
+            "palette": palette,
+            "preset": preset,
+            "dither": dither,
+            "outline": outline,
+            "background": background,
+            "view": view,
+            "seed": seed,
+        }
+        pipeline.build_spec(prompt, preset, cli_overrides, llm=None)
+
+    _require_api_key()
+    llm = make_llm()
+    generator = pipeline.get_generator(backend, llm)
+    result = pipeline.run_generate(
+        prompt,
+        llm=llm,
+        generator=generator,
+        backend_name=backend,
+        preset_name=preset,
+        cli_overrides=cli_overrides,
+        output=output,
+        overwrite=output is not None,
+        scale=scale,
+        on_spec=_print_spec if show_spec else None,
+    )
+    print_summary(result)
