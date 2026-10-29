@@ -1,0 +1,6 @@
+palette: nes
+width: 16
+height: 16
+dither: "none"
+outline: true
+notes: "8-bit console sprite: chunky readable shapes, flat colour areas, at most three colours plus outline per sprite"

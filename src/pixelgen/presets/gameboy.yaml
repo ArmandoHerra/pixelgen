@@ -1,0 +1,6 @@
+palette: gameboy
+width: 32
+height: 32
+dither: bayer
+outline: false
+notes: "Classic handheld look, high contrast, simple shapes"

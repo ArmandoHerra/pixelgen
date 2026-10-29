@@ -1,0 +1,8 @@
+palette: pico8
+width: 16
+height: 16
+dither: "none"
+outline: true
+background: transparent
+view: front
+notes: "Single centred object that reads at a glance at small size, bold silhouette, minimal detail"
