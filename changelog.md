@@ -19,3 +19,4 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 - PXG-11 — `pixelgen generate` end to end with every flag, one-line errors, phase-based exit codes and pre-spend output checks.
 - PXG-12 — `pixelgen refine` with `--from`, the `last.json` fallback and `-vN` versioned outputs.
 - PXG-13 — README rewrite with a doc test; cycle-1 changelog entry.
+- PXG-14 — offline examples checker and three live sample generations (plus one refine) in `examples/`, with the README `## Examples` section.

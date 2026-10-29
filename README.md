@@ -35,6 +35,17 @@ pixelgen generate "a red apple" --size 16 --palette pico8
 
 This writes `out/a-red-apple.png` (the exact 16x16 image), `out/a-red-apple@8x.png` (an upscaled preview) and `out/a-red-apple.json` (the sidecar: spec, grid and token usage). It calls the Anthropic API, see [Costs](#costs). Run `pixelgen --version` to see the installed version.
 
+## Examples
+
+Real output from the default model, with the exact commands and token costs recorded in [`examples/README.md`](examples/README.md). Each image is the `@8x` nearest-neighbour preview of a native pixel-art PNG.
+
+| Preview | Command |
+|---------|---------|
+| ![red apple](examples/red-apple/red-apple@8x.png) | `pixelgen generate "a red apple" --size 16 --palette pico8 -o examples/red-apple/red-apple.png` |
+| ![slime enemy](examples/slime/slime@8x.png) | `pixelgen generate "slime enemy" --preset gameboy --dither bayer --outline -o examples/slime/slime.png` |
+| ![a tiny knight with a red cape](examples/knight/knight@8x.png) | `pixelgen generate "a tiny knight with a red cape" --size 32 --palette pico8 -o examples/knight/knight.png` |
+| ![the knight refined: blue cape and a sword](examples/knight/knight-v2@8x.png) | `pixelgen refine "make the cape blue and add a sword" --from examples/knight/knight.json` |
+
 ## Commands
 
 `pixelgen --help` lists the commands. Every command accepts `--help`.

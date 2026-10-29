@@ -1,0 +1,50 @@
+{
+  "run_record_version": 1,
+  "slug": "knight",
+  "steps": [
+    {
+      "kind": "generate",
+      "command": "pixelgen generate \"a tiny knight with a red cape\" --size 32 --palette pico8 -o examples/knight/knight.png",
+      "prompt": "a tiny knight with a red cape",
+      "model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-10-29T06:40:09.505060Z",
+      "sidecar": "knight.json",
+      "usage": {
+        "input_tokens": 992,
+        "output_tokens": 7328
+      },
+      "prices_usd_per_mtok": {
+        "input_tokens": 2.0,
+        "output_tokens": 10.0
+      },
+      "prices_confirmed_on": "2026-10-29",
+      "estimate_usd": 0.025328,
+      "cost_usd": 0.075264,
+      "cap_usd": 0.75,
+      "notes": "Estimate: D7 expected values from decision.md section 9.9 (624 in / 2,408 out tokens) at the confirmed prices."
+    },
+    {
+      "kind": "refine",
+      "command": "pixelgen refine \"make the cape blue and add a sword\" --from examples/knight/knight.json",
+      "prompt": "make the cape blue and add a sword",
+      "model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-10-29T06:40:51.367061Z",
+      "sidecar": "knight-v2.json",
+      "usage": {
+        "input_tokens": 3351,
+        "output_tokens": 6285
+      },
+      "prices_usd_per_mtok": {
+        "input_tokens": 2.0,
+        "output_tokens": 10.0
+      },
+      "prices_confirmed_on": "2026-10-29",
+      "estimate_usd": 0.026164,
+      "cost_usd": 0.069552,
+      "cap_usd": 0.75,
+      "notes": "Live refine ran; wrote knight-v2.* in examples/knight/. Estimate: D7 expected values from decision.md section 9.9 (1,792 in / 2,258 out tokens) at the confirmed prices."
+    }
+  ]
+}

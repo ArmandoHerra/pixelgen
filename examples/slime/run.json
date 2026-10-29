@@ -1,0 +1,28 @@
+{
+  "run_record_version": 1,
+  "slug": "slime",
+  "steps": [
+    {
+      "kind": "generate",
+      "command": "pixelgen generate \"slime enemy\" --preset gameboy --dither bayer --outline -o examples/slime/slime.png",
+      "prompt": "slime enemy",
+      "model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-10-29T06:39:08.211369Z",
+      "sidecar": "slime.json",
+      "usage": {
+        "input_tokens": 1784,
+        "output_tokens": 15559
+      },
+      "prices_usd_per_mtok": {
+        "input_tokens": 2.0,
+        "output_tokens": 10.0
+      },
+      "prices_confirmed_on": "2026-10-29",
+      "estimate_usd": 0.025328,
+      "cost_usd": 0.159158,
+      "cap_usd": 0.75,
+      "notes": "Estimate: D7 expected values from decision.md section 9.9 (624 in / 2,408 out tokens) at the confirmed prices. 2 grid validation retries (4 calls)."
+    }
+  ]
+}

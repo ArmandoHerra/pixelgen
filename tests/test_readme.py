@@ -188,6 +188,7 @@ def _render_default(default) -> str:
 ORDER = [
     "Install",
     "Quick start",
+    "Examples",
     "Commands",
     "Configuration",
     "Palettes and presets",
@@ -577,14 +578,17 @@ def test_out_of_scope_lists_the_five_items(item):
     assert item.lower() in _section("Out of scope").lower()
 
 
-def test_readme_claims_no_example_images():
-    patterns = [
-        r"\]\(\s*(\./)?examples/",
-        r"src=[\"'](\./)?examples/",
-        r"/examples/[^)\s]*\.(png|gif|jpe?g)",
-    ]
-    hits = [p for p in patterns if re.search(p, README)]
-    assert not hits, f"README references example images: {hits}"
+def test_readme_examples_section_links_resolve():
+    """PXG-14 D8: every ``examples/`` path lives in ``## Examples`` and exists on disk."""
+    section = _section("Examples")
+    outside = README.replace(section, "")
+    assert "examples/" not in outside, "README references examples/ outside '## Examples'"
+    paths = set(re.findall(r"examples/[\w@./-]+\.(?:png|json|md)", section))
+    assert paths, "## Examples references no example files"
+    missing = sorted(p for p in paths if not (ROOT / p).is_file())
+    assert not missing, f"missing example files: {missing}"
+    dirs = {m for m in re.findall(r"examples/([\w-]+)/", section)}
+    assert len(dirs) >= 3, f"## Examples references only {sorted(dirs)}"
 
 
 def test_license_section_is_mit_and_matches_license_file():

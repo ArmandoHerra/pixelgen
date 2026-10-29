@@ -1,0 +1,28 @@
+{
+  "run_record_version": 1,
+  "slug": "red-apple",
+  "steps": [
+    {
+      "kind": "generate",
+      "command": "pixelgen generate \"a red apple\" --size 16 --palette pico8 -o examples/red-apple/red-apple.png",
+      "prompt": "a red apple",
+      "model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-10-29T06:35:51.205143Z",
+      "sidecar": "red-apple.json",
+      "usage": {
+        "input_tokens": 977,
+        "output_tokens": 674
+      },
+      "prices_usd_per_mtok": {
+        "input_tokens": 2.0,
+        "output_tokens": 10.0
+      },
+      "prices_confirmed_on": "2026-10-29",
+      "estimate_usd": 0.009968,
+      "cost_usd": 0.008694,
+      "cap_usd": 0.75,
+      "notes": "Estimate: D7 expected values from decision.md section 9.9 (624 in / 872 out tokens) at the confirmed prices."
+    }
+  ]
+}
