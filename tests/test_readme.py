@@ -596,3 +596,25 @@ def test_license_section_is_mit_and_matches_license_file():
     assert "MIT" in body and "LICENSE" in body
     first = (ROOT / "LICENSE").read_text(encoding="utf-8").splitlines()[0]
     assert first == "MIT License"
+
+
+# --- PXG-19 ---
+
+_POC = re.compile(r"proof[- ]of[- ]concept|\bpoc\b", re.IGNORECASE)
+
+
+def _intro() -> str:
+    masked = _mask_fences(README)
+    m = re.search(r"^## ", masked, re.MULTILINE)
+    return README[: m.start()] if m else README
+
+
+def test_readme_has_no_proof_of_concept_framing():
+    found = _POC.findall(README)
+    assert not found, f"README carries proof-of-concept wording: {found}"
+
+
+def test_readme_intro_matches_the_repository_description():
+    intro = _intro()
+    for claim in ("natural-language prompt", "true pixel art", "exact grid size", "exact palette"):
+        assert claim in intro, f"README intro lost the product claim {claim!r}"
