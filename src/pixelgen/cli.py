@@ -15,7 +15,7 @@ from rich.text import Text
 
 from pixelgen import __version__, palettes, pipeline, presets
 from pixelgen.backends.base import available_backends
-from pixelgen.errors import MissingAPIKeyError, PixelgenError
+from pixelgen.errors import MissingAPIKeyError, PixelgenError, SpecError
 from pixelgen.llm import AnthropicLLM
 from pixelgen.spec import ArtSpec
 
@@ -266,3 +266,36 @@ def generate(
         on_spec=_print_spec if show_spec else None,
     )
     print_summary(result)
+
+
+@app.command("refine")
+@error_boundary
+def refine(
+    instruction: str = typer.Argument(..., help="The edit to make, in plain language."),
+    from_: Annotated[
+        Path | None,
+        typer.Option("--from", help="Sidecar .json to refine (default: the last result)."),
+    ] = None,
+) -> None:
+    """Edit the last result (or --from a sidecar) and write the next -vN version."""
+    source = None
+    with usage_phase():
+        instruction = instruction.strip()
+        if not instruction:
+            raise SpecError("refine needs a non-empty INSTRUCTION")
+        if from_ is not None:
+            source = pipeline.load_refine_source(from_)
+    if source is None:
+        source = pipeline.load_refine_source(None)
+    pipeline.preflight_refine(source)
+
+    _require_api_key()
+    llm = make_llm()
+    outcome = pipeline.run_refine(source, instruction, llm=llm)
+    print_summary(outcome.result)
+    if outcome.ignored:
+        typer.echo(
+            f"pixelgen: note: refine keeps the source's {', '.join(outcome.ignored)}; "
+            "that requested change was ignored",
+            err=True,
+        )

@@ -1,6 +1,6 @@
 """The UI-free generate pipeline: spec -> backend -> pixelate -> export (PXG-11).
 
-No Typer or Rich in here: PXG-12 (refine) reuses ``render_grid`` and the helpers unchanged.
+No Typer or Rich in here: refine (PXG-12) reuses ``render_grid`` and the helpers unchanged.
 """
 
 from __future__ import annotations
@@ -17,8 +17,21 @@ import numpy as np
 
 from pixelgen.backends.base import Generator, create_generator
 from pixelgen.config import pixelgen_home
-from pixelgen.errors import OutputExistsError, PaletteError, PixelgenError
-from pixelgen.export import ExportResult, TokenUsage, export, output_paths
+from pixelgen.errors import (
+    NoPreviousResultError,
+    OutputExistsError,
+    PaletteError,
+    PixelgenError,
+)
+from pixelgen.export import (
+    ExportResult,
+    Sidecar,
+    TokenUsage,
+    export,
+    load_last,
+    load_sidecar,
+    output_paths,
+)
 from pixelgen.palettes import list_palettes, load_palette
 from pixelgen.pixelate import grid_to_rgba, pixelate
 from pixelgen.presets import load_preset
@@ -219,3 +232,85 @@ def run_generate(
         model=getattr(llm, "model", None),
         token_usage=to_token_usage(*usages),
     )
+
+
+# --- refine (PXG-12) ----------------------------------------------------------------------
+
+_VERSION_SUFFIX = r"(?:[2-9]|[1-9][0-9]+)"
+_STEM_VERSION = re.compile(rf"^(?P<base>.+)-v(?P<n>{_VERSION_SUFFIX})$")
+
+
+@dataclass(frozen=True)
+class RefineSource:
+    sidecar: Sidecar
+    path: Path
+
+
+@dataclass(frozen=True)
+class RefineOutcome:
+    result: PipelineResult
+    ignored: tuple[str, ...]
+
+
+def load_refine_source(from_: Path | None) -> RefineSource:
+    """Resolve the previous result offline: ``--from`` sidecar, else the ``last.json`` copy."""
+    if from_ is not None:
+        return RefineSource(sidecar=load_sidecar(from_), path=from_.resolve())
+    try:
+        last = load_last()
+    except NoPreviousResultError as err:
+        raise NoPreviousResultError(
+            f"{err.message}; run 'pixelgen generate' first or pass --from <sidecar.json>"
+        ) from err
+    return RefineSource(sidecar=last.sidecar, path=last.sidecar_path)
+
+
+def next_version_base(source_path: Path) -> Path:
+    """``<dir>/<base>-vN`` where N is above the input's version and every existing file's."""
+    name = source_path.name
+    stem = name[: -len(".json")] if name.endswith(".json") else source_path.stem
+    match = _STEM_VERSION.match(stem)
+    base, input_n = (match.group("base"), int(match.group("n"))) if match else (stem, 1)
+    directory = source_path.parent
+    pattern = re.compile(
+        rf"^{re.escape(base)}-v(?P<n>{_VERSION_SUFFIX})(?:\.json|\.png|@[0-9]+x\.png)$"
+    )
+    highest = 0
+    if directory.is_dir():
+        for entry in directory.iterdir():
+            found = pattern.match(entry.name)
+            if found:
+                highest = max(highest, int(found.group("n")))
+    return directory / f"{base}-v{max(input_n, highest) + 1}"
+
+
+def preflight_refine(source: RefineSource) -> Path:
+    """Filesystem checks before the first paid call; writes nothing. Returns the -vN base."""
+    base = next_version_base(source.path)
+    _check_writable_dir(base.parent, "output")
+    _check_writable_dir(pixelgen_home(), "pixelgen home")
+    return base
+
+
+def run_refine(source: RefineSource, instruction: str, *, llm: Any) -> RefineOutcome:
+    previous = source.sidecar
+    palette = load_palette(previous.spec.palette)
+    generator = create_generator("llm-grid", llm=llm)
+    refined = generator.refine(previous.spec, previous.grid, palette, instruction)  # type: ignore[attr-defined]
+    spec = ArtSpec.model_validate({**refined.spec.model_dump(), "preset": previous.spec.preset})
+    ignored = tuple(refined.locked_overrides)
+    if refined.spec.preset != previous.spec.preset:
+        ignored += ("preset",)
+    base = next_version_base(source.path)
+    result = render_grid(
+        spec,
+        refined.grid,
+        palette,
+        output=base,
+        scale=previous.outputs.scale,
+        overwrite=False,
+        backend="llm-grid",
+        model=getattr(llm, "model", None),
+        token_usage=to_token_usage(refined.usage),
+    )
+    return RefineOutcome(result=result, ignored=ignored)
