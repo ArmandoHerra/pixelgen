@@ -1,0 +1,33 @@
+import re
+import tomllib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+DATA = tomllib.loads((ROOT / "pyproject.toml").read_text())
+
+
+def _names(reqs):
+    return {re.match(r"^[A-Za-z0-9._-]+", r).group(0).lower().replace("_", "-") for r in reqs}
+
+
+def test_runtime_dependencies():
+    deps = DATA["project"]["dependencies"]
+    assert _names(deps) == {"typer", "rich", "pillow", "numpy", "anthropic", "pyyaml", "pydantic"}
+    pyd = [d for d in deps if d.lower().startswith("pydantic")][0]
+    assert ">=2" in pyd
+
+
+def test_dev_extra_and_group_are_pytest_only():
+    assert _names(DATA["project"]["optional-dependencies"]["dev"]) == {"pytest"}
+    assert _names(DATA["dependency-groups"]["dev"]) == {"pytest"}
+
+
+def test_build_system_is_hatchling_only():
+    assert _names(DATA["build-system"]["requires"]) == {"hatchling"}
+
+
+def test_license():
+    assert DATA["project"]["license"] == "MIT"
+    text = (ROOT / "LICENSE").read_text()
+    assert text.startswith("MIT License")
+    assert "Copyright (c) 2026 Armando Herra" in text

@@ -23,3 +23,8 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Tooling
+.pytest_cache/
+out/
+*.egg-info/

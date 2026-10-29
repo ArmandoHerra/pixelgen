@@ -25,4 +25,4 @@ pytest
 
 ## License
 
-TBD
+Released under the MIT License. See the `LICENSE` file for the full text.
