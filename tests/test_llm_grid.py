@@ -123,7 +123,7 @@ def test_non_json_output_consumes_an_attempt():
 # AC6
 def test_transport_error_is_not_retried():
     scripted = LLMError("network down")
-    g, fake = gen(scripted, ok(16, 16))
+    g, fake = gen(scripted)
     with pytest.raises(LLMError) as info:
         g.generate(spec(), P4)
     assert info.value is scripted
