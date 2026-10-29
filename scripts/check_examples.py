@@ -57,6 +57,13 @@ def _redact(text: str) -> str:
     return KEY_PATTERN.sub(REDACTED, text)
 
 
+def _redact_path(rel: str) -> str:
+    """Per path segment, replace key text through that segment's end (keeps the path usable)."""
+    return "/".join(
+        seg[: seg.index(KEY_TEXT)] + REDACTED if KEY_TEXT in seg else seg for seg in rel.split("/")
+    )
+
+
 def _scrub(text: str, generic: str) -> str:
     """Swap any text that carries key material for a generic reason."""
     return generic if KEY_TEXT in text else text
@@ -67,7 +74,10 @@ def _is_number(value: Any) -> bool:
     if isinstance(value, bool):
         return False
     if isinstance(value, int):
-        return True
+        try:
+            return math.isfinite(float(value))
+        except OverflowError:
+            return False
     return isinstance(value, float) and math.isfinite(value)
 
 
@@ -212,7 +222,10 @@ def _cost_problems(step: dict[str, Any], bad: Any) -> list[Problem]:
     if not _is_number(cost) or not _is_number(cap):
         return [bad("cost_usd and cap_usd must be numbers")]
     problems: list[Problem] = []
-    expected = round(sum(usage[k] * prices[k] for k in usage) / 1e6, 6)
+    raw = sum(float(usage[k]) * float(prices[k]) for k in usage)
+    if not math.isfinite(raw):
+        return [bad("usage x prices overflow the cost formula")]
+    expected = round(raw / 1e6, 6)
     if abs(cost - expected) > 1e-9:
         problems.append(bad(f"cost_usd {cost} != formula {expected}"))
     if cost > cap:
@@ -256,21 +269,55 @@ def _png_text_chunks(data: bytes) -> tuple[list[bytes], list[str]]:
             compressed = remainder
         try:
             inflater = zlib.decompressobj()
-            plain = inflater.decompress(compressed, MAX_TEXT_BYTES)
+            plain = inflater.decompress(compressed, MAX_TEXT_BYTES + 1)
         except zlib.error:
-            failures.append(ctype.decode("ascii"))
+            failures.append(f"{ctype.decode('ascii')} chunk failed to decompress")
             continue
+        if len(plain) > MAX_TEXT_BYTES:
+            failures.append(f"{ctype.decode('ascii')} chunk exceeds the decompression bound")
+            plain = plain[:MAX_TEXT_BYTES]
         texts.append(keyword + plain)
     return texts, failures
+
+
+def _json_strings(obj: Any) -> Any:
+    """Yield every dict key, dict value and list item that is a string (explicit stack)."""
+    stack = [obj]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            for key, value in item.items():
+                stack.append(key)
+                stack.append(value)
+        elif isinstance(item, list):
+            stack.extend(item)
+
+
+def _decoded_json_hit(data: bytes) -> bool:
+    try:
+        obj = json.loads(data)
+    except (ValueError, RecursionError):
+        return False
+    return any(KEY_TEXT in s for s in _json_strings(obj))
 
 
 def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
     problems: list[Problem] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
+        for dname in dirnames:
+            if KEY_TEXT in dname:
+                drel = (Path(dirpath) / dname).relative_to(root).as_posix() + "/"
+                stats.key_hits += 1
+                problems.append(Problem(drel, "key-like material in name"))
         for name in sorted(filenames):
             path = Path(dirpath) / name
             rel = path.relative_to(root).as_posix()
+            if KEY_TEXT in name:
+                stats.key_hits += 1
+                problems.append(Problem(rel, "key-like material in name"))
             try:
                 data = path.read_bytes()
             except OSError:
@@ -279,9 +326,11 @@ def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
             hit = KEY_MARKER in data
             if data.startswith(PNG_SIGNATURE):
                 texts, failures = _png_text_chunks(data)
-                for kind in sorted(set(failures)):
-                    problems.append(Problem(rel, f"{kind} chunk failed to decompress"))
+                for reason in sorted(set(failures)):
+                    problems.append(Problem(rel, reason))
                 hit = hit or any(KEY_MARKER in t for t in texts)
+            else:
+                hit = hit or _decoded_json_hit(data)
             if hit:
                 stats.key_hits += 1
                 problems.append(Problem(rel, "key-like material"))
@@ -457,8 +506,8 @@ def main(argv: list[str] | None = None) -> int:
     problems = check_tree(root, args.require_runs, stats)
     if problems:
         for problem in problems:
-            print(_redact(f"FAIL {problem.relpath}: {problem.reason}"))
-        print(_redact(f"FAIL {args.root}: {len(problems)} problem(s)"))
+            print(_redact(f"FAIL {_redact_path(problem.relpath)}: {problem.reason}"))
+        print(_redact(f"FAIL {_redact_path(args.root)}: {len(problems)} problem(s)"))
         return 1
     print(
         _redact(

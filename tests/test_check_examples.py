@@ -2,6 +2,7 @@
 
 import ast
 import copy
+import importlib.util
 import json
 import struct
 import subprocess
@@ -61,6 +62,19 @@ def run_checker(*args) -> subprocess.CompletedProcess:
         cwd=REPO,
         timeout=120,
     )
+
+
+def _load_checker():
+    spec = importlib.util.spec_from_file_location("check_examples", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["check_examples"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture(scope="module")
+def checker():
+    return _load_checker()
 
 
 def build_grid(colors: np.ndarray) -> tuple[list[list[int]], np.ndarray]:
@@ -349,16 +363,79 @@ def test_committed_examples_tree():
     pytest.skip(line)
 
 
-def test_checker_imports_no_llm():
-    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
-    imported: list[str] = []
-    for node in ast.walk(tree):
+def _is_banned(name: str) -> bool:
+    if name.split(".")[0] == "anthropic":
+        return True
+    return any(name == b or name.startswith(b + ".") for b in ("pixelgen.llm", "pixelgen.cli"))
+
+
+def _banned_imports(source: str) -> list[str]:
+    """Banned module names the source imports: static forms, imported names, dynamic imports."""
+    recorded: list[str] = []
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            imported += [a.name for a in node.names]
+            recorded += [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.append(node.module)
-    banned = ("anthropic", "pixelgen.llm", "pixelgen.cli")
-    assert not [m for m in imported if m.split(".")[0] == "anthropic" or m in banned], imported
+            recorded.append(node.module)
+            recorded += [f"{node.module}.{a.name}" for a in node.names]
+        elif isinstance(node, ast.Call):
+            func = node.func
+            dynamic = (isinstance(func, ast.Name) and func.id == "__import__") or (
+                isinstance(func, ast.Attribute) and func.attr == "import_module"
+            )
+            if dynamic and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    recorded.append(first.value)
+    return [name for name in recorded if _is_banned(name)]
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "import anthropic",
+        "import anthropic.types as t",
+        "from anthropic import Anthropic",
+        "from pixelgen import llm",
+        "from pixelgen import cli as c",
+        "import pixelgen.llm",
+        'importlib.import_module("anthropic")',
+        '__import__("pixelgen.cli")',
+    ],
+)
+def test_banned_import_detector_flags(snippet):
+    assert _banned_imports(snippet)
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from pixelgen.export import Sidecar",
+        "from pixelgen import palettes",
+        "import numpy as np",
+    ],
+)
+def test_banned_import_detector_allows(snippet):
+    assert _banned_imports(snippet) == []
+
+
+def test_checker_imports_no_llm():
+    assert _banned_imports(SCRIPT.read_text(encoding="utf-8")) == []
+
+
+def test_checker_runtime_imports_no_llm():
+    code = (
+        "import runpy, sys\n"
+        f"runpy.run_path({str(SCRIPT)!r}, run_name='probe')\n"
+        "bad = ('anthropic', 'pixelgen.llm', 'pixelgen.cli')\n"
+        "hit = [m for m in sys.modules if any(m == b or m.startswith(b + '.') for b in bad)]\n"
+        "print(sorted(hit))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO, timeout=120
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "[]", proc.stdout
 
 
 def test_nan_usage_value_is_rejected(root):
@@ -456,6 +533,25 @@ def _stray_name(slug_dir: Path) -> None:
     (slug_dir / f"{SECRET}.txt").write_text("x\n", encoding="utf-8")
 
 
+def _json_escaped_run_notes(slug_dir: Path) -> None:
+    path = slug_dir / "run.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["steps"][0]["notes"] = SECRET
+    text = json.dumps(data).replace("sk-ant-", "\\u0073k-ant-")
+    assert "sk-ant-" not in text
+    path.write_text(text, encoding="utf-8")
+
+
+def _slug_dir_name(slug_dir: Path) -> None:
+    slug_dir.rename(slug_dir.parent / SECRET)
+
+
+def _overbound_ztxt_tail(slug_dir: Path) -> None:
+    mod = _load_checker()
+    payload = b"Comment\x00\x00" + zlib.compress(b"A" * mod.MAX_TEXT_BYTES + SECRET.encode())
+    _inject_chunk(slug_dir / f"{SLUG}.png", b"zTXt", payload)
+
+
 KEY_PLACES = {
     "schema_version": _sidecar_edit(lambda d: d.update(schema_version=SECRET)),
     "palette_colors_entry": _sidecar_edit(_color_entry),
@@ -466,6 +562,9 @@ KEY_PLACES = {
     "run_command": _record_edit(_command),
     "run_notes": _record_edit(lambda d: d["steps"][0].update(notes=SECRET)),
     "stray_filename": _stray_name,
+    "json_escaped_run_notes": _json_escaped_run_notes,
+    "slug_dir_name": _slug_dir_name,
+    "overbound_ztxt_tail": _overbound_ztxt_tail,
 }
 
 
@@ -490,3 +589,131 @@ def test_key_in_root_argument_is_not_echoed(tmp_path):
     bad_count = run_checker(tmp_path, "--require-runs", SECRET)
     assert bad_count.returncode == 2
     assert "FAKEFAKE" not in bad_count.stdout + bad_count.stderr
+
+
+def _detail_lines(proc) -> list[str]:
+    return [ln for ln in proc.stdout.splitlines() if ln.startswith("FAIL ")][:-1]
+
+
+@pytest.mark.parametrize("case", ["run_notes", "sidecar_notes"])
+def test_json_escaped_key_is_detected(case, root):
+    slug_dir = make_example(root)
+    name = "run.json" if case == "run_notes" else f"{SLUG}.json"
+    path = slug_dir / name
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if case == "run_notes":
+        data["steps"][0]["notes"] = SECRET
+    else:
+        data["spec"]["notes"] = SECRET
+    text = json.dumps(data).replace("sk-ant-", "\\u0073k-ant-")
+    assert "sk-ant-" not in text
+    path.write_text(text, encoding="utf-8")
+    proc = run_checker(root)
+    assert_single_fail(proc, root, f"{SLUG}/{name}", "key-like material")
+    assert _detail_lines(proc) == [f"FAIL {SLUG}/{name}: key-like material"]
+    assert "FAKEFAKE" not in proc.stdout + proc.stderr
+    assert "sk-ant-" not in proc.stdout + proc.stderr
+
+
+def test_overbound_text_chunk_is_a_problem(root, checker):
+    slug_dir = make_example(root)
+    payload = b"Comment\x00\x00" + zlib.compress(b"A" * checker.MAX_TEXT_BYTES + SECRET.encode())
+    _inject_chunk(slug_dir / f"{SLUG}.png", b"zTXt", payload)
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert f"FAIL {SLUG}/{SLUG}.png: zTXt chunk exceeds the decompression bound" in (
+        _detail_lines(proc)
+    )
+    assert "FAKEFAKE" not in proc.stdout + proc.stderr
+
+
+def _chunk_png(ctype: bytes, body: bytes) -> bytes:
+    crc = struct.pack(">I", zlib.crc32(ctype + body))
+    return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", len(body)) + ctype + body + crc
+
+
+@pytest.mark.parametrize("ctype", [b"zTXt", b"iTXt"])
+@pytest.mark.parametrize("over", [False, True], ids=["at-bound", "over-bound"])
+def test_text_chunk_bound_edge(ctype, over, tmp_path, checker):
+    size = checker.MAX_TEXT_BYTES + (1 if over else 0)
+    comp = zlib.compress(b"A" * size)
+    if ctype == b"zTXt":
+        body = b"Comment\x00\x00" + comp
+    else:
+        body = b"Comment\x00\x01\x00\x00\x00" + comp
+    (tmp_path / "blob.png").write_bytes(_chunk_png(ctype, body))
+    problems = checker._key_material_problems(tmp_path, checker.Stats())
+    if over:
+        reason = f"{ctype.decode()} chunk exceeds the decompression bound"
+        assert problems == [checker.Problem("blob.png", reason)]
+    else:
+        assert problems == []
+
+
+def _edit_record(case):
+    def apply(rec):
+        step = rec["steps"][0]
+        if case == "usage_int":
+            step["usage"]["input_tokens"] = 10**400
+        elif case == "price_int":
+            step["prices_usd_per_mtok"]["input_tokens"] = 10**400
+        elif case == "cost_int":
+            step["cost_usd"] = 10**400
+        elif case == "cap_int":
+            step["cap_usd"] = 10**400
+        else:
+            step["usage"]["cache_read_input_tokens"] = 10**300
+            step["prices_usd_per_mtok"]["cache_read_input_tokens"] = 10**300
+
+    return apply
+
+
+NUMERIC_EXPECT = {
+    "usage_int": [
+        "usage differs from sidecar token_usage",
+        "usage must map token kinds to numbers",
+    ],
+    "price_int": ["no price for usage key(s): input_tokens"],
+    "cost_int": ["cost_usd and cap_usd must be numbers"],
+    "cap_int": ["cost_usd and cap_usd must be numbers"],
+    "product_overflow": ["usage x prices overflow the cost formula"],
+}
+
+
+@pytest.mark.parametrize("case", list(NUMERIC_EXPECT))
+def test_oversized_numeric_is_a_fail_line(case, root):
+    record = copy.deepcopy(RECORD)
+    _edit_record(case)(record)
+    slug_dir = make_example(root)
+    text = json.dumps(record, indent=2)
+    (slug_dir / "run.json").write_text(text, encoding="utf-8")
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+    assert "Traceback" not in proc.stdout + proc.stderr
+    want = [f"FAIL {SLUG}/run.json: step 1: {r}" for r in NUMERIC_EXPECT[case]]
+    assert _detail_lines(proc) == want
+
+
+def test_key_in_slug_dir_name_keeps_a_usable_path(root):
+    make_example(root)
+    (root / SLUG).rename(root / SECRET)
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert _detail_lines(proc) == [
+        "FAIL [redacted]/run.json: slug differs from directory name",
+        "FAIL [redacted]/: key-like material in name",
+    ]
+    assert proc.stdout.splitlines()[-1] == f"FAIL {root}: 2 problem(s)"
+    assert "FAKEFAKE" not in proc.stdout + proc.stderr
+    assert "sk-ant-" not in proc.stdout + proc.stderr
+
+
+def test_key_in_root_path_keeps_summary_usable(tmp_path):
+    root = tmp_path / f"{SECRET}-x" / "examples"
+    make_example(root)
+    (root / "notes.txt").write_text("stray\n", encoding="utf-8")
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.splitlines()[-1] == f"FAIL {tmp_path}/[redacted]/examples: 1 problem(s)"
+    assert "FAKEFAKE" not in proc.stdout + proc.stderr
