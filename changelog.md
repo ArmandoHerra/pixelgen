@@ -4,6 +4,18 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 
 ## [Unreleased]
 
+### Cycle 2 — CLI contract hardening
+
+- PXG-15 — `-o` drops only a lowercase trailing `.png`, so `-o x.PNG` writes `x.PNG.png` and never overwrites `x.png`.
+- PXG-16 — the examples checker now catches keys hidden in JSON-escaped strings, inflated PNG text chunks, huge integers and key-named slug directories, and its no-LLM import check inspects runtime imports.
+- PXG-17 — CI runs `ruff check` and `ruff format --check`, and a standard-library test fails when `uv.lock` drifts from `pyproject.toml`.
+- PXG-18 — every Click/Typer parse error prints one `pixelgen: error:` line with a `--help` hint and exits 2; help and `--version` output is unchanged.
+- PXG-19 — the README intro no longer describes the project as a proof of concept.
+- PXG-20 — the PXG-08 transport-error retry test scripts a single FakeLLM item, so widening the retry catch now fails it.
+- PXG-21 — write errors name the path the user asked for, and size errors read `--size must be between 8 and 128`.
+- PXG-22 — `NO_COLOR` is honoured under `GITHUB_ACTIONS`, `FORCE_COLOR` and `PY_COLORS` without patching private Typer state, and the no-args help stays on stdout with exit 2.
+- PXG-23 — contract tests pinning the sweep-proven CLI points; this cycle-2 changelog section.
+
 ### Cycle 1 — proof of concept
 
 - PXG-01 — installable `pixelgen` package, the `ArtSpec` model, the no-network test harness and the ruff lint gate.
