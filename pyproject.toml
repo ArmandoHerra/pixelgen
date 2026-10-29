@@ -22,10 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.8"]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.8"]
 
 [project.scripts]
 pixelgen = "pixelgen.cli:app"
@@ -36,3 +36,10 @@ addopts = "--strict-markers"
 markers = [
     "allow_anthropic_client: permit constructing an anthropic client object; SDK requests stay blocked (tests/conftest.py)",
 ]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

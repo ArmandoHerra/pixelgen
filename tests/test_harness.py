@@ -8,7 +8,12 @@ MESSAGE = dict(model="m", max_tokens=1, messages=[{"role": "user", "content": "x
 
 
 def test_env_is_scrubbed():
-    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "PIXELGEN_MODEL"):
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "PIXELGEN_MODEL",
+    ):
         assert key not in os.environ
 
 
@@ -32,11 +37,15 @@ def test_constructing_anthropic_client_fails_loudly():
 
 @pytest.mark.allow_anthropic_client
 def test_marked_client_constructs_but_requests_are_blocked():
-    client = anthropic.Anthropic(api_key="sk-ant-test", base_url="http://127.0.0.1:9", max_retries=0)
+    client = anthropic.Anthropic(
+        api_key="sk-ant-test", base_url="http://127.0.0.1:9", max_retries=0
+    )
     with pytest.raises(pytest.fail.Exception, match="SDK request blocked"):
         client.messages.create(**MESSAGE)
 
-    aclient = anthropic.AsyncAnthropic(api_key="sk-ant-test", base_url="http://127.0.0.1:9", max_retries=0)
+    aclient = anthropic.AsyncAnthropic(
+        api_key="sk-ant-test", base_url="http://127.0.0.1:9", max_retries=0
+    )
 
     async def go():
         await aclient.messages.create(**MESSAGE)

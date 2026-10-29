@@ -11,10 +11,7 @@ _CONSTRUCT_MSG = (
     "pixelgen test guard: tests must never construct a real anthropic client; "
     "use tests/fakes.py::FakeLLM or the allow_anthropic_client marker"
 )
-_REQUEST_MSG = (
-    "pixelgen test guard: SDK request blocked; tests must never call the "
-    "Anthropic API"
-)
+_REQUEST_MSG = "pixelgen test guard: SDK request blocked; tests must never call the Anthropic API"
 
 
 def _blocked_init(self, *args, **kwargs):

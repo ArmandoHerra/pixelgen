@@ -17,9 +17,9 @@ def test_runtime_dependencies():
     assert ">=2" in pyd
 
 
-def test_dev_extra_and_group_are_pytest_only():
-    assert _names(DATA["project"]["optional-dependencies"]["dev"]) == {"pytest"}
-    assert _names(DATA["dependency-groups"]["dev"]) == {"pytest"}
+def test_dev_extra_and_group_are_pytest_and_ruff_only():
+    assert _names(DATA["project"]["optional-dependencies"]["dev"]) == {"pytest", "ruff"}
+    assert _names(DATA["dependency-groups"]["dev"]) == {"pytest", "ruff"}
 
 
 def test_build_system_is_hatchling_only():

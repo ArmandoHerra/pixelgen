@@ -6,8 +6,18 @@ from pydantic import ValidationError
 from pixelgen.spec import ArtSpec
 
 FIELDS = {
-    "subject", "width", "height", "palette", "preset", "background",
-    "background_color_index", "outline", "dither", "view", "seed", "notes",
+    "subject",
+    "width",
+    "height",
+    "palette",
+    "preset",
+    "background",
+    "background_color_index",
+    "outline",
+    "dither",
+    "view",
+    "seed",
+    "notes",
 }
 
 
@@ -15,8 +25,17 @@ def test_artspec_fields_and_defaults_match_plan():
     assert set(ArtSpec.model_fields) == FIELDS
     s = ArtSpec(subject="x")
     assert (
-        s.width, s.height, s.palette, s.preset, s.background,
-        s.background_color_index, s.outline, s.dither, s.view, s.seed, s.notes,
+        s.width,
+        s.height,
+        s.palette,
+        s.preset,
+        s.background,
+        s.background_color_index,
+        s.outline,
+        s.dither,
+        s.view,
+        s.seed,
+        s.notes,
     ) == (32, 32, "pico8", None, "transparent", None, True, "none", "front", None, None)
     hints = typing.get_type_hints(ArtSpec)
     assert typing.get_args(hints["background"]) == ("transparent", "solid")

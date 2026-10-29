@@ -2,9 +2,16 @@ from pixelgen import errors
 from pixelgen.errors import PixelgenError, SpecError
 
 NAMES = [
-    "PaletteError", "PresetError", "SpecError", "MissingAPIKeyError", "LLMError",
-    "LLMOutputError", "GridValidationError", "BackendUnavailableError",
-    "OutputExistsError", "NoPreviousResultError",
+    "PaletteError",
+    "PresetError",
+    "SpecError",
+    "MissingAPIKeyError",
+    "LLMError",
+    "LLMOutputError",
+    "GridValidationError",
+    "BackendUnavailableError",
+    "OutputExistsError",
+    "NoPreviousResultError",
 ]
 
 
