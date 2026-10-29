@@ -118,3 +118,50 @@ def test_ci_permissions_read_only():
     assert wf["permissions"] == {"contents": "read"}
     with_perms = [n for n, j in wf["jobs"].items() if "permissions" in j]
     assert not with_perms, f"jobs define permissions: {with_perms}"
+
+
+def test_ci_job_set_is_exactly_test_install_smoke_lint():
+    assert set(_load()["jobs"]) == {"test", "install-smoke", "lint"}
+
+
+def test_ci_lint_job_runs_ruff_from_pip_dev_install():
+    text = _run_text(_load()["jobs"]["lint"])
+    needles = ('pip install -e ".[dev]"', "ruff check .", "ruff format --check .")
+    positions = []
+    for needle in needles:
+        assert needle in text, f"{needle!r} not in lint run text"
+        positions.append(text.index(needle))
+    assert positions == sorted(positions), "lint commands out of order"
+
+
+def test_ci_installs_no_uv():
+    wf = _load()
+    setup_uv = [
+        s["uses"]
+        for job in wf["jobs"].values()
+        for s in job.get("steps", [])
+        if "setup-uv" in str(s.get("uses", ""))
+    ]
+    assert not setup_uv, f"setup-uv used: {setup_uv}"
+    offenders = [name for name, job in wf["jobs"].items() if re.search(r"\buv\b", _run_text(job))]
+    assert not offenders, f"uv in run text of jobs: {offenders}: " + "; ".join(
+        _run_text(wf["jobs"][n]) for n in offenders
+    )
+
+
+def test_ci_lint_job_cannot_pass_on_violation():
+    job = _load()["jobs"]["lint"]
+    forbidden = ("--exit-zero", "--fix", "|| true", "--diff || ", "continue-on-error")
+    ruff_steps = [
+        s
+        for s in job["steps"]
+        if "ruff check" in s.get("run", "") or "ruff format" in s.get("run", "")
+    ]
+    assert ruff_steps
+    for step in ruff_steps:
+        run = step["run"].strip()
+        assert "\n" not in run, f"ruff command must be a whole step: {run!r}"
+        assert run.startswith("python -m ruff "), run
+        for bad in forbidden:
+            assert bad not in run, f"{bad!r} in {run!r}"
+        assert "continue-on-error" not in step
