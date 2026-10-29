@@ -121,3 +121,10 @@ def test_resolve_spec_is_pure():
     first = resolve_spec(d, p, i, c)
     assert (d, p, i, c) == before
     assert resolve_spec(d, p, i, c) == first
+
+
+def test_unknown_key_with_none_value_is_rejected_at_every_layer():
+    with pytest.raises(SpecError, match="unknown field\\(s\\): colour"):
+        resolve_spec(cli_overrides={"subject": "s", "colour": None})
+    with pytest.raises(SpecError, match="unknown field\\(s\\): colour"):
+        resolve_spec(preset={"colour": None}, inferred={"subject": "s"})

@@ -23,13 +23,13 @@ class ArtSpec(BaseModel):
     notes: str | None = None  # extra style guidance for the generator
 
 
-def _given(layer: Mapping[str, Any] | ArtSpec | None) -> dict[str, Any]:
-    """Entries a layer actually sets; ``None`` means "not given"."""
+def _raw(layer: Mapping[str, Any] | ArtSpec | None) -> dict[str, Any]:
+    """A layer's raw entries, ``None`` values included."""
     if layer is None:
         return {}
     if isinstance(layer, ArtSpec):
-        layer = layer.model_dump(exclude_unset=True)
-    return {key: value for key, value in layer.items() if value is not None}
+        return layer.model_dump(exclude_unset=True)
+    return dict(layer)
 
 
 def resolve_spec(
@@ -39,12 +39,14 @@ def resolve_spec(
     cli_overrides: Mapping[str, Any] | None = None,
 ) -> ArtSpec:
     """Merge defaults < preset < LLM-inferred < CLI into one validated spec."""
-    merged: dict[str, Any] = {}
-    for layer in (defaults, preset, inferred, cli_overrides):
-        merged.update(_given(layer))
-    unknown = sorted(set(merged) - set(ArtSpec.model_fields))
+    layers = [_raw(layer) for layer in (defaults, preset, inferred, cli_overrides)]
+    # Unknown keys are rejected on the RAW keys; None only means "not given" for known fields.
+    unknown = sorted({key for layer in layers for key in layer} - set(ArtSpec.model_fields))
     if unknown:
         raise SpecError(f"invalid spec: unknown field(s): {', '.join(unknown)}")
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        merged.update({key: value for key, value in layer.items() if value is not None})
     if "subject" not in merged:
         raise SpecError("invalid spec: subject is required")
     try:
