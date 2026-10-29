@@ -130,7 +130,7 @@ class LastResult:
 def output_paths(output: Path, scale: int) -> tuple[Path, Path, Path]:
     """Return absolute ``(png, preview, sidecar)`` paths for ``output``."""
     output = Path(output)
-    stem = output.with_suffix("") if output.suffix.lower() == ".png" else output
+    stem = output.with_suffix("") if output.suffix == ".png" else output
     stem = stem.absolute()
     name = stem.name
     return (

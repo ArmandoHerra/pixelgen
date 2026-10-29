@@ -425,6 +425,25 @@ def test_explicit_output_overwrites(h):
     assert not (h.tmp / "out" / "apple_2.png").exists()
 
 
+def test_explicit_output_uppercase_png_does_not_clobber_lowercase(h):
+    out = h.tmp / "out"
+    out.mkdir()
+    (out / "x.png").write_bytes(b"precious\n")
+    before = hashlib.sha256(b"precious\n").hexdigest()
+    result = h.run(["a red apple", "--size", "16", "-o", "out/x.PNG"], {}, {"grid": _grid(0)})
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    assert _sha(out / "x.png") == before
+    with Image.open(out / "x.PNG.png") as img:
+        assert img.mode == "RGBA"
+        assert img.size == (16, 16)
+    assert (out / "x.PNG@8x.png").is_file()
+    assert (out / "x.PNG.json").is_file()
+    assert not (out / "x@8x.png").exists()
+    assert not (out / "x.json").exists()
+    assert "x.PNG.png" in result.stdout
+    assert h.llm.call_count == 2
+
+
 def test_explicit_output_existing_directory_is_a_usage_error(h):
     (h.tmp / "somedir").mkdir()
     result = h.run(["x", "--size", "16", "-o", "somedir"], {}, {"grid": _grid()})

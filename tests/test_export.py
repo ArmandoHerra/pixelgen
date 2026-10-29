@@ -80,8 +80,17 @@ def test_output_paths_naming():
     assert str(png).endswith("out/a.b.png")
     assert str(prev).endswith("out/a.b@3x.png")
     assert str(side).endswith("out/a.b.json")
-    assert output_paths(Path("x.PNG"), 1)[0].name == "x.png"
-    assert output_paths(Path("x.PNG"), 1)[2].name == "x.json"
+    assert output_paths(Path("x.PNG"), 1)[0].name == "x.PNG.png"
+    assert output_paths(Path("x.PNG"), 1)[2].name == "x.PNG.json"
+
+
+@pytest.mark.parametrize("given", ["x.PNG", "x.Png", "x.pNg"])
+def test_output_paths_uppercase_suffix_is_appended(given):
+    png, prev, side = output_paths(Path("out") / given, 8)
+    assert png.is_absolute() and prev.is_absolute() and side.is_absolute()
+    assert png.name == f"{given}.png"
+    assert prev.name == f"{given}@8x.png"
+    assert side.name == f"{given}.json"
 
 
 def test_native_png_is_exact_rgba(tmp_path):
