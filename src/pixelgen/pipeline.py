@@ -5,6 +5,7 @@ No Typer or Rich in here: PXG-12 (refine) reuses ``render_grid`` and the helpers
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
@@ -15,7 +16,8 @@ from typing import Any
 import numpy as np
 
 from pixelgen.backends.base import Generator, create_generator
-from pixelgen.errors import OutputExistsError, PaletteError
+from pixelgen.config import pixelgen_home
+from pixelgen.errors import OutputExistsError, PaletteError, PixelgenError
 from pixelgen.export import ExportResult, TokenUsage, export, output_paths
 from pixelgen.palettes import list_palettes, load_palette
 from pixelgen.pixelate import grid_to_rgba, pixelate
@@ -56,6 +58,57 @@ def next_free_output(out_dir: Path, slug: str, scale: int) -> Path:
     raise OutputExistsError(
         f"no free output name for '{slug}' in {out_dir} (tried up to _{MAX_COLLISION_INDEX})"
     )
+
+
+def ensure_backend_available(name: str) -> None:
+    """Refuse an unavailable backend before any key check or client exists.
+
+    Backends are constructed with ``llm=None``: an unavailable one refuses at construction
+    (``BackendUnavailableError``); an available one just holds the ``None`` and is discarded.
+    """
+    get_generator(name, None)
+
+
+def _nearest_existing(path: Path) -> Path:
+    current = path
+    while not os.path.lexists(current):
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return current
+
+
+def _check_writable_dir(path: Path, label: str) -> None:
+    """Refuse when the nearest existing ancestor of ``path`` is no writable directory."""
+    target = path.absolute()
+    anchor = _nearest_existing(target)
+    where = "" if anchor == target else f" ('{anchor}')"
+    if not anchor.is_dir():
+        raise PixelgenError(f"cannot write {label} '{path}': not a directory{where}")
+    if not os.access(anchor, os.W_OK | os.X_OK):
+        raise PixelgenError(f"cannot write {label} '{path}': not writable{where}")
+
+
+def preflight_generate(
+    prompt: str,
+    output: Path | None,
+    scale: int,
+    out_dir: Path = DEFAULT_OUT_DIR,
+) -> Path:
+    """Everything knowable about the filesystem before the first paid call; writes nothing.
+
+    Returns the final output path (the default name is resolved here, not after spend) and
+    raises ``PixelgenError`` when the output or ``PIXELGEN_HOME`` cannot be written.
+    """
+    if output is None:
+        _check_writable_dir(out_dir, "output directory")
+        resolved = next_free_output(out_dir, slugify_prompt(prompt), scale)
+    else:
+        resolved = output
+        _check_writable_dir(output.absolute().parent, "output")
+    _check_writable_dir(pixelgen_home(), "pixelgen home")
+    return resolved
 
 
 def ensure_palette_known(name: str) -> None:
@@ -152,7 +205,7 @@ def run_generate(
         on_spec(spec)
     generated = generator.generate(spec, palette)
     usages = [generated.usage] if inferred is None else [inferred.usage, generated.usage]
-    if output is None:
+    if output is None:  # callers that did not preflight resolve the default name here
         output = next_free_output(out_dir, slugify_prompt(prompt), scale)
         overwrite = False
     return render_grid(

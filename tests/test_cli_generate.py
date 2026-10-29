@@ -1,5 +1,6 @@
 """CLI tests for ``pixelgen generate`` (PXG-11). Everything runs on FakeLLM, offline."""
 
+import errno
 import hashlib
 import os
 import subprocess
@@ -428,4 +429,138 @@ def test_explicit_output_existing_directory_is_a_usage_error(h):
     (h.tmp / "somedir").mkdir()
     result = h.run(["x", "--size", "16", "-o", "somedir"], {}, {"grid": _grid()})
     assert_clean_failure(result, EXIT_USAGE)
+    assert h.llm.call_count == 0
+
+
+# --- X-PXG-38 fix-forward 1: pre-spend preflight and OSError boundary ----------------------
+
+
+def _tree(root):
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def test_preflight_parent_file_default_name_refuses_before_spend(h):
+    (h.tmp / "out").write_text("not a directory")
+    before = _tree(h.tmp)
+    result = h.run(["a red apple", "--size", "16"], {}, {"grid": _grid()})
+    assert_clean_failure(result, EXIT_RUNTIME, "out")
+    assert h.llm.call_count == 0
+    assert h.make_llm_calls == 0
+    assert _tree(h.tmp) == before
+
+
+def test_preflight_parent_file_explicit_output_refuses_before_spend(h):
+    (h.tmp / "afile").write_text("not a directory")
+    before = _tree(h.tmp)
+    result = h.run(["a red apple", "--size", "16", "-o", "afile/x.png"], {}, {"grid": _grid()})
+    assert_clean_failure(result, EXIT_RUNTIME, "afile")
+    assert "not a directory" in result.stderr
+    assert h.llm.call_count == 0
+    assert h.make_llm_calls == 0
+    assert _tree(h.tmp) == before
+
+
+def test_preflight_parent_file_subprocess_never_reaches_the_key_check(tmp_path):
+    (tmp_path / "out").write_text("not a directory")
+    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    env["PIXELGEN_HOME"] = str(tmp_path / "home")
+    proc = subprocess.run(
+        [sys.executable, "-c", "from pixelgen.cli import app; app(prog_name='pixelgen')",
+         "generate", "a red apple"],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+    )  # fmt: skip
+    assert proc.returncode == 1, (proc.stdout, proc.stderr)
+    assert "pixelgen: error:" in proc.stderr and "out" in proc.stderr
+    assert "ANTHROPIC_API_KEY" not in proc.stderr
+    assert "Traceback" not in proc.stderr and "Traceback" not in proc.stdout
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        lambda p: PermissionError(13, "Permission denied", p),
+        lambda p: OSError(errno.ENAMETOOLONG, "File name too long", p),
+    ],
+)
+def test_boundary_oserror_is_one_clean_line(h, monkeypatch, make_exc):
+    def boom(*a, **kw):
+        raise make_exc("out/target.png")
+
+    monkeypatch.setattr(pipeline, "run_generate", boom)
+    result = h.run(["x", "--size", "16"], {})
+    assert isinstance(result.exception, SystemExit)
+    line = assert_clean_failure(result, EXIT_RUNTIME, "out/target.png")
+    assert make_exc("p").strerror in line
+
+
+def test_boundary_oserror_real_filesystem_name_too_long(h):
+    long_name = "a" * 300
+    result = h.run(["x", "--size", "16", "-o", f"out/{long_name}.png"], {}, {"grid": _grid()})
+    assert_clean_failure(result, EXIT_RUNTIME)
+
+
+def test_boundary_bug_visible_runtime_error_is_not_swallowed(h, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(pipeline, "run_generate", boom)
+    result = h.run(["x", "--size", "16"], {})
+    assert isinstance(result.exception, RuntimeError)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_preflight_readonly_directory_refuses_before_spend(h):
+    ro = h.tmp / "ro"
+    ro.mkdir()
+    ro.chmod(0o555)
+    try:
+        result = h.run(["a red apple", "--size", "16", "-o", "ro/x.png"], {}, {"grid": _grid()})
+    finally:
+        ro.chmod(0o755)
+    assert_clean_failure(result, EXIT_RUNTIME, "ro")
+    assert h.llm.call_count == 0
+    assert h.make_llm_calls == 0
+
+
+def test_preflight_home_file_refuses_before_spend(h, monkeypatch):
+    home = h.tmp / "homefile"
+    home.write_text("not a directory")
+    monkeypatch.setenv("PIXELGEN_HOME", str(home))
+    result = h.run(["a red apple", "--size", "16"], {}, {"grid": _grid()})
+    assert_clean_failure(result, EXIT_RUNTIME, str(home))
+    assert h.llm.call_count == 0
+    assert h.make_llm_calls == 0
+    assert not (h.tmp / "out").exists()
+
+
+def test_preflight_collision_exhaustion_refuses_before_spend(h, monkeypatch):
+    monkeypatch.setattr(pipeline, "MAX_COLLISION_INDEX", 3)
+    out = h.tmp / "out"
+    out.mkdir()
+    for name in ("a-red-apple", "a-red-apple_2", "a-red-apple_3"):
+        (out / f"{name}.png").write_bytes(b"x")
+    result = h.run(["a red apple", "--size", "16"], {}, {"grid": _grid()})
+    assert_clean_failure(result, EXIT_RUNTIME, "no free output name")
+    assert h.llm.call_count == 0
+    assert h.make_llm_calls == 0
+
+
+@pytest.mark.parametrize("prompt", ["", "   "])
+def test_empty_prompt_is_a_usage_error_before_the_key_check(h, prompt):
+    result = h.run([prompt], {}, key=False)
+    assert_clean_failure(result, EXIT_USAGE, "prompt is empty")
+    assert h.make_llm_calls == 0
+
+
+def test_diffusion_or_backend_refusal_needs_no_key_and_builds_no_client(h):
+    result = h.run(["x", "--size", "16", "--backend", "diffusion"], {}, key=False)
+    line = assert_clean_failure(result, EXIT_RUNTIME, "diffusion")
+    assert "ANTHROPIC_API_KEY" not in line
+    assert h.make_llm_calls == 0
+
+
+def test_diffusion_or_backend_refusal_with_key_never_calls_make_llm(h):
+    result = h.run(["x", "--size", "16", "--backend", "diffusion"], {})
+    assert_clean_failure(result, EXIT_RUNTIME, "diffusion")
+    assert h.make_llm_calls == 0
     assert h.llm.call_count == 0

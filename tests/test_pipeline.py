@@ -10,7 +10,7 @@ from fakes import FakeLLM
 
 import pixelgen.pipeline as pipeline
 from pixelgen.backends.base import GenerationUsage, create_generator
-from pixelgen.errors import OutputExistsError, PaletteError
+from pixelgen.errors import BackendUnavailableError, OutputExistsError, PaletteError, PixelgenError
 from pixelgen.export import TokenUsage, load_sidecar
 from pixelgen.llm import Usage
 from pixelgen.palettes import list_palettes, load_palette
@@ -212,3 +212,58 @@ def test_pipeline_is_ui_free():
             continue
         banned += [n for n in names if n.split(".")[0] in ("typer", "rich") or n == "pixelgen.cli"]
     assert banned == []
+
+
+# --- X-PXG-38 fix-forward 1: the UI-free preflight ----------------------------------------
+
+
+def test_preflight_generate_resolves_the_default_name_and_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "home"))
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "a-red-apple.png").write_bytes(b"x")
+    before = sorted(tmp_path.rglob("*"))
+    got = pipeline.preflight_generate("a red apple", None, 4, out_dir=out)
+    assert got == out / "a-red-apple_2"
+    assert sorted(tmp_path.rglob("*")) == before
+
+
+def test_preflight_generate_missing_directories_are_fine_when_an_ancestor_is_writable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "deep" / "home"))
+    target = tmp_path / "new" / "dir" / "x.png"
+    assert pipeline.preflight_generate("p", target, 4) == target
+    assert not (tmp_path / "new").exists()
+
+
+def test_preflight_generate_refuses_a_file_ancestor(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "home"))
+    (tmp_path / "afile").write_text("x")
+    with pytest.raises(PixelgenError, match=r"afile.*not a directory"):
+        pipeline.preflight_generate("p", tmp_path / "afile" / "sub" / "x.png", 4)
+
+
+def test_preflight_generate_refuses_a_home_that_is_a_file(tmp_path, monkeypatch):
+    home = tmp_path / "homefile"
+    home.write_text("x")
+    monkeypatch.setenv("PIXELGEN_HOME", str(home))
+    with pytest.raises(PixelgenError, match=r"homefile.*not a directory"):
+        pipeline.preflight_generate("p", tmp_path / "x.png", 4)
+
+
+def test_preflight_generate_collision_exhaustion_raises_output_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pipeline, "MAX_COLLISION_INDEX", 2)
+    out = tmp_path / "out"
+    out.mkdir()
+    for name in ("p", "p_2"):
+        (out / f"{name}.png").write_bytes(b"x")
+    with pytest.raises(OutputExistsError, match="no free output name"):
+        pipeline.preflight_generate("p", None, 4, out_dir=out)
+
+
+def test_ensure_backend_available_accepts_llm_grid_and_refuses_diffusion():
+    pipeline.ensure_backend_available("llm-grid")
+    with pytest.raises(BackendUnavailableError):
+        pipeline.ensure_backend_available("diffusion")

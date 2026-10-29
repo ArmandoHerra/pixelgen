@@ -49,6 +49,13 @@ def _error_line(exc: PixelgenError) -> str:
     return f"pixelgen: error: {text or type(exc).__name__}"
 
 
+def _oserror_line(exc: OSError) -> str:
+    reason = _collapse(exc.strerror or "") or type(exc).__name__
+    if exc.filename is not None:
+        return f"pixelgen: error: cannot access '{_collapse(str(exc.filename))}': {reason}"
+    return f"pixelgen: error: {reason}"
+
+
 def _fail(line: str, code: int) -> NoReturn:
     typer.echo(line, err=True)
     raise typer.Exit(code)
@@ -69,7 +76,10 @@ def usage_phase() -> Iterator[None]:
 
 
 def error_boundary(func: Callable[P, R]) -> Callable[P, R]:
-    """Turn any PixelgenError into one stderr line and exit 1; never a traceback."""
+    """Turn a PixelgenError or OSError into one stderr line and exit 1; never a traceback.
+
+    Other exceptions are programming bugs and stay visible.
+    """
 
     @functools.wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -77,6 +87,8 @@ def error_boundary(func: Callable[P, R]) -> Callable[P, R]:
             return func(*args, **kwargs)
         except PixelgenError as exc:
             _fail(_error_line(exc), EXIT_RUNTIME)
+        except OSError as exc:
+            _fail(_oserror_line(exc), EXIT_RUNTIME)
 
     return wrapper
 
@@ -208,6 +220,8 @@ def generate(
 ) -> None:
     """Generate pixel art from PROMPT."""
     with usage_phase():
+        if not prompt.strip():
+            usage_error("prompt is empty")
         if size is not None and (width is not None or height is not None):
             usage_error("--size cannot be combined with --width or --height")
         if not SCALE_MIN <= scale <= SCALE_MAX:
@@ -233,6 +247,9 @@ def generate(
         }
         pipeline.build_spec(prompt, preset, cli_overrides, llm=None)
 
+    pipeline.ensure_backend_available(backend)
+    resolved_output = pipeline.preflight_generate(prompt, output, scale)
+
     _require_api_key()
     llm = make_llm()
     generator = pipeline.get_generator(backend, llm)
@@ -243,7 +260,7 @@ def generate(
         backend_name=backend,
         preset_name=preset,
         cli_overrides=cli_overrides,
-        output=output,
+        output=resolved_output,
         overwrite=output is not None,
         scale=scale,
         on_spec=_print_spec if show_spec else None,
