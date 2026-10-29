@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn, ParamSpec, TypeVar
 
 import typer
+import typer.core
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -31,13 +32,6 @@ R = TypeVar("R")
 
 # The LLM seam: tests monkeypatch ``pixelgen.cli.make_llm``.
 make_llm = AnthropicLLM.from_env
-
-app = typer.Typer(
-    name="pixelgen",
-    help="Turn a natural-language prompt into true pixel art.",
-    no_args_is_help=True,
-    add_completion=False,
-)
 
 
 def _collapse(text: str) -> str:
@@ -73,6 +67,48 @@ def usage_phase() -> Iterator[None]:
         yield
     except PixelgenError as exc:
         _fail(_error_line(exc), EXIT_USAGE)
+
+
+# The Click usage-error base class, resolved through typer's public BadParameter so that
+# cli.py never imports click or typer._click (absent as a declared dependency in Typer 0.27).
+_USAGE_ERROR = next(c for c in typer.BadParameter.__mro__ if c.__name__ == "UsageError")
+
+
+def _parse_error_line(exc: Any) -> str:
+    text = _collapse(exc.format_message()) or type(exc).__name__
+    ctx = getattr(exc, "ctx", None)
+    hint = f" (see '{_collapse(ctx.command_path)} --help')" if ctx is not None else ""
+    return f"pixelgen: error: {text}{hint}"
+
+
+@contextmanager
+def _parse_errors_as_usage() -> Iterator[None]:
+    """Turn a Click/Typer parse error into one product line and exit 2 (X-PXG-41)."""
+    try:
+        yield
+    except _USAGE_ERROR as exc:
+        if type(exc).__name__ == "NoArgsIsHelpError":
+            raise  # the help is already on stdout; Typer prints nothing more
+        _fail(_parse_error_line(exc), EXIT_USAGE)
+
+
+class PixelgenGroup(typer.core.TyperGroup):
+    def make_context(self, info_name: Any, args: Any, parent: Any = None, **extra: Any) -> Any:
+        with _parse_errors_as_usage():
+            return super().make_context(info_name, args, parent=parent, **extra)
+
+    def invoke(self, ctx: Any) -> Any:
+        with _parse_errors_as_usage():
+            return super().invoke(ctx)
+
+
+app = typer.Typer(
+    name="pixelgen",
+    help="Turn a natural-language prompt into true pixel art.",
+    no_args_is_help=True,
+    add_completion=False,
+    cls=PixelgenGroup,
+)
 
 
 def error_boundary(func: Callable[P, R]) -> Callable[P, R]:
