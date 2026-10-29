@@ -1,9 +1,9 @@
 """Regression guard: the CLI tests must pass under CI's colour environment.
 
-Typer samples GITHUB_ACTIONS / FORCE_COLOR / PY_COLORS once, at import time, to
-force ANSI output. The autouse fixture in conftest.py neutralises that; this test
-reproduces a CI process in a subprocess, so removing the fixture's pin turns it red
-even on a developer machine.
+CI sets GITHUB_ACTIONS / FORCE_COLOR / PY_COLORS, which make Typer force ANSI output.
+The app honours NO_COLOR per invocation (conftest sets it), so help stays plain. This
+test reproduces a CI process in a subprocess: if Typer stops honouring the
+per-invocation markup mode, the child run goes red even on a developer machine.
 """
 
 import os
@@ -26,7 +26,16 @@ def test_cli_suite_passes_under_ci_colour_env():
     for key in ("NO_COLOR", "COLUMNS", "TERM"):
         env.pop(key, None)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_cli.py"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "tests/test_cli.py",
+            "tests/test_cli_refine.py",
+        ],
         cwd=ROOT,
         env=env,
         capture_output=True,

@@ -3,6 +3,7 @@
 import functools
 import os
 import re
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Annotated, Any, NoReturn, ParamSpec, TypeVar
 
 import typer
 import typer.core
+import typer.main
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -103,7 +105,35 @@ class PixelgenGroup(typer.core.TyperGroup):
             return super().invoke(ctx)
 
 
-app = typer.Typer(
+class _NoColorTyper(typer.Typer):
+    """Typer forces a terminal at import under CI variables; NO_COLOR must win per invocation."""
+
+    @property
+    def rich_markup_mode(self) -> Any:
+        if os.environ.get("NO_COLOR", ""):
+            return None
+        return self._pixelgen_markup_mode
+
+    @rich_markup_mode.setter
+    def rich_markup_mode(self, value: Any) -> None:
+        self._pixelgen_markup_mode = value
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # On Typer's plain path a bare invocation writes the help to stderr; keep it on
+        # stdout, exit 2 (X-PXG-52).
+        if self.rich_markup_mode is None:
+            argv = args[0] if args else kwargs.get("args")
+            if argv is None:
+                argv = sys.argv[1:]
+            if not list(argv):
+                prog = kwargs.get("prog_name") or os.path.basename(sys.argv[0])
+                ctx = typer.main.get_command(self).make_context(prog, [], resilient_parsing=True)
+                typer.echo(ctx.get_help())
+                sys.exit(EXIT_USAGE)
+        return super().__call__(*args, **kwargs)
+
+
+app = _NoColorTyper(
     name="pixelgen",
     help="Turn a natural-language prompt into true pixel art.",
     no_args_is_help=True,

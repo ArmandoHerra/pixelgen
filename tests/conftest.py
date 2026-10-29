@@ -3,7 +3,6 @@
 import anthropic
 import anthropic._base_client as _base_client
 import pytest
-import typer.rich_utils
 
 _ORIG_SYNC_INIT = anthropic.Anthropic.__init__
 _ORIG_ASYNC_INIT = anthropic.AsyncAnthropic.__init__
@@ -43,11 +42,9 @@ def _pixelgen_hermetic_env(monkeypatch, tmp_path, request):
         "PIXELGEN_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
-    # Plain, wide output for every CliRunner test regardless of CI/terminal.
-    # Typer samples GITHUB_ACTIONS/FORCE_COLOR/PY_COLORS once, at import, into
-    # typer.rich_utils.FORCE_TERMINAL, so env vars set here are too late: pinning
-    # the attribute is the one load-bearing line (guarded by test_ci_env.py).
-    monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", False)
+    # Plain, wide output for every CliRunner test regardless of CI colour variables:
+    # the app honours NO_COLOR per invocation (PXG-22); tests/test_ci_env.py guards it.
+    monkeypatch.setenv("NO_COLOR", "1")
     monkeypatch.setenv("COLUMNS", "200")
     monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "pixelgen-home"))
     if request.node.get_closest_marker("allow_anthropic_client"):
