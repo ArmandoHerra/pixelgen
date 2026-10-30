@@ -10,10 +10,12 @@ import shutil
 import stat
 from pathlib import Path
 
+import numpy as np
 import pytest
 import typer.main
 from aseprite_oracle import parse_aseprite, to_sidecar_grid
 from fakes import FakeLLM
+from PIL import Image
 from typer.testing import CliRunner
 
 import pixelgen.cli as cli
@@ -22,6 +24,8 @@ import pixelgen.pipeline as pipeline
 import pixelgen.presets
 from pixelgen.cli import EXIT_OK, EXIT_RUNTIME, EXIT_USAGE, app
 from pixelgen.export import load_sidecar
+from pixelgen.palettes import load_palette
+from pixelgen.pixelate import grid_to_rgba
 
 runner = CliRunner()
 SLUG = "a-red-apple"
@@ -35,6 +39,16 @@ def _grid(seed: int = 0, side: int = 16, colours: int = 16) -> list[list[int]]:
         ]
         for r in range(side)
     ]
+
+
+def assert_ase_matches_png(png: Path, ase: Path, palette: str = "pico8") -> None:
+    """The .aseprite shows what the PNG shows (PXG-31); RGB under alpha 0 is ignored."""
+    ours = np.array(Image.open(png).convert("RGBA"))
+    grid = np.array(to_sidecar_grid(parse_aseprite(ase.read_bytes())), dtype=np.int64)
+    theirs = grid_to_rgba(grid, load_palette(palette))
+    assert ours.shape == theirs.shape
+    both_clear = (ours[..., 3] == 0) & (theirs[..., 3] == 0)
+    assert int(((ours != theirs).any(axis=2) & ~both_clear).sum()) == 0
 
 
 def _sha(path: Path) -> str:
@@ -163,8 +177,7 @@ def test_generate_aseprite_writes_four_files(h, extra, stem):
     assert result.exit_code == EXIT_OK, (result.stdout, result.stderr)
     assert _names(h.out) == {f"{stem}.png", f"{stem}@8x.png", f"{stem}.json", f"{stem}.aseprite"}
     sidecar = load_sidecar(h.out / f"{stem}.json")
-    ase = parse_aseprite((h.out / f"{stem}.aseprite").read_bytes())
-    assert to_sidecar_grid(ase) == sidecar.grid
+    assert_ase_matches_png(h.out / f"{stem}.png", h.out / f"{stem}.aseprite")
     assert sidecar.outputs.aseprite == f"{stem}.aseprite"
     png, preview = h.out / f"{stem}.png", h.out / f"{stem}@8x.png"
     side, ase_path = h.out / f"{stem}.json", h.out / f"{stem}.aseprite"
@@ -193,9 +206,7 @@ def test_refine_aseprite_is_explicit_never_inherited_flag_on(h):
     b = h.refine(["--from", str(h.out / f"{SLUG}.json"), "--aseprite"])
     assert b.exit_code == EXIT_OK, (b.stdout, b.stderr)
     ase = h.out / f"{SLUG}-v2.aseprite"
-    assert to_sidecar_grid(parse_aseprite(ase.read_bytes())) == (
-        load_sidecar(h.out / f"{SLUG}-v2.json").grid
-    )
+    assert_ase_matches_png(h.out / f"{SLUG}-v2.png", ase)
     assert b.stdout.endswith(f", aseprite {ase.resolve()}\n")
 
 
@@ -264,9 +275,7 @@ def test_explicit_output_overwrites_aseprite(h):
     result = h.generate(["-o", "out/x", "--aseprite"])
     assert result.exit_code == EXIT_OK, (result.stdout, result.stderr)
     target = h.out / "x.aseprite"
-    assert to_sidecar_grid(parse_aseprite(target.read_bytes())) == (
-        load_sidecar(h.out / "x.json").grid
-    )
+    assert_ase_matches_png(h.out / "x.png", target)
     assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
 

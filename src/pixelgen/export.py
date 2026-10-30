@@ -30,7 +30,7 @@ from pydantic import (
 
 from pixelgen.aseprite import encode_aseprite
 from pixelgen.config import pixelgen_home
-from pixelgen.errors import NoPreviousResultError, OutputExistsError, SpecError
+from pixelgen.errors import AsepriteError, NoPreviousResultError, OutputExistsError, SpecError
 from pixelgen.spec import ArtSpec
 
 SIDECAR_SCHEMA_VERSION: Final[int] = 1
@@ -213,6 +213,44 @@ def _validate_arrays(rgba: Any, palette_colors: Any, scale: Any, spec: ArtSpec) 
         raise ValueError("palette_colors must be a uint8 array of shape (N, 3) with N >= 1")
 
 
+def _aseprite_indices(
+    rgba: np.ndarray, grid: Sequence[Sequence[int]], palette_colors: np.ndarray
+) -> np.ndarray:
+    """Index grid (``-1`` = transparent) for the exact image the PNG holds (PXG-31, D2).
+
+    Alpha 0 is ``-1``. An opaque pixel keeps the model's index when it matches that palette entry,
+    otherwise it takes the lowest matching palette index. Anything else is refused: never
+    approximated.
+    """
+    raw = np.asarray(grid, dtype=np.int64)
+    if raw.shape != rgba.shape[:2]:
+        raise ValueError(f"grid shape {raw.shape} does not match image shape {rgba.shape[:2]}")
+    alpha = rgba[..., 3]
+    opaque = alpha == 255
+    clear = alpha == 0
+    # (H, W, N): does this pixel's RGB equal palette entry k?
+    match = (rgba[..., None, :3] == palette_colors[None, None, :, :]).all(axis=3)
+    n = palette_colors.shape[0]
+    out = np.full(raw.shape, -1, dtype=np.int64)
+    lowest = match.argmax(axis=2)
+    found = match.any(axis=2)
+    in_range = (raw >= 0) & (raw < n)
+    raw_ok = np.zeros(raw.shape, dtype=bool)
+    raw_ok[in_range] = match[in_range, raw[in_range]]
+    out[opaque] = np.where(raw_ok, raw, lowest)[opaque]
+    bad = ~(clear | (opaque & found))
+    if bad.any():
+        y, x = (int(v) for v in np.argwhere(bad)[0])
+        if not opaque[y, x] and not clear[y, x]:
+            raise AsepriteError(
+                f"cannot write .aseprite: pixel ({x}, {y}) has partial alpha {int(alpha[y, x])}"
+            )
+        raise AsepriteError(
+            f"cannot write .aseprite: pixel ({x}, {y}) is opaque and not in the palette"
+        )
+    return out
+
+
 def export(
     output: Path,
     rgba: np.ndarray,
@@ -260,7 +298,7 @@ def export(
 
     # Encode before any I/O so a refused palette/grid leaves nothing behind (X-PXG-62.3).
     ase_bytes = (
-        encode_aseprite(np.asarray(sidecar.grid, dtype=np.int64), palette_colors)
+        encode_aseprite(_aseprite_indices(rgba, sidecar.grid, palette_colors), palette_colors)
         if aseprite_path is not None
         else None
     )
