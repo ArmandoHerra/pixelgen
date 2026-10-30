@@ -1,0 +1,43 @@
+name: Aseprite compat (advisory)
+
+"on":
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aseprite-compat
+  cancel-in-progress: false
+
+# Advisory LibreSprite check (research X1, O4). Never a required check; never on pull_request.
+jobs:
+  libresprite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      LS_URL: https://github.com/LibreSprite/LibreSprite/releases/download/v1.3/libresprite-v1.3-linux-x86_64.AppImage
+      LS_SHA256: fd90bddda8135fe00f4a9a9c8c9ebd48f9b07e8782ab269be5c9efb1a851af30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pixelgen
+        run: python -m pip install .
+      - name: Fetch and verify LibreSprite
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/libresprite.AppImage" "$LS_URL"
+          echo "$LS_SHA256  $RUNNER_TEMP/libresprite.AppImage" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/libresprite.AppImage"
+      - name: Write cases with the shipped writer
+        run: python .github/scripts/aseprite_compat.py make "$RUNNER_TEMP/cases"
+      - name: Render each case with LibreSprite (batch)
+        run: |
+          for f in "$RUNNER_TEMP"/cases/*.aseprite; do
+            APPIMAGE_EXTRACT_AND_RUN=1 "$RUNNER_TEMP/libresprite.AppImage" -b "$f" --save-as "${f%.aseprite}.libresprite.png"
+          done
+      - name: Compare (alpha-0 rule)
+        run: python .github/scripts/aseprite_compat.py compare "$RUNNER_TEMP/cases"
