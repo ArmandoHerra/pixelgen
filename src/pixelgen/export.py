@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, overload
 
 import numpy as np
 from PIL import Image
@@ -20,12 +20,15 @@ from pydantic import (
     ConfigDict,
     NonNegativeInt,
     PositiveInt,
+    SerializerFunctionWrapHandler,
     StrictInt,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
+from pixelgen.aseprite import encode_aseprite
 from pixelgen.config import pixelgen_home
 from pixelgen.errors import NoPreviousResultError, OutputExistsError, SpecError
 from pixelgen.spec import ArtSpec
@@ -66,13 +69,23 @@ class OutputNames(BaseModel):
     png: str
     preview: str
     scale: PositiveInt
+    aseprite: str | None = None
 
-    @field_validator("png", "preview")
+    @field_validator("png", "preview", "aseprite")
     @classmethod
-    def _basename_only(cls, value: str) -> str:
+    def _basename_only(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
         if not value or "/" in value or "\\" in value:
             raise ValueError("must be a bare file name")
         return value
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_aseprite(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.aseprite is None:
+            data.pop("aseprite", None)
+        return data
 
 
 class Sidecar(BaseModel):
@@ -119,6 +132,7 @@ class ExportResult:
     preview_path: Path
     sidecar_path: Path
     last_path: Path
+    aseprite_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -127,17 +141,32 @@ class LastResult:
     sidecar_path: Path
 
 
-def output_paths(output: Path, scale: int) -> tuple[Path, Path, Path]:
-    """Return absolute ``(png, preview, sidecar)`` paths for ``output``."""
+@overload
+def output_paths(
+    output: Path, scale: int, *, aseprite: Literal[False] = False
+) -> tuple[Path, Path, Path]: ...
+
+
+@overload
+def output_paths(
+    output: Path, scale: int, *, aseprite: Literal[True]
+) -> tuple[Path, Path, Path, Path]: ...
+
+
+def output_paths(output: Path, scale: int, *, aseprite: bool = False) -> tuple[Path, ...]:
+    """Return absolute ``(png, preview, sidecar)`` paths, plus ``.aseprite`` when asked."""
     output = Path(output)
     stem = output.with_suffix("") if output.suffix == ".png" else output
     stem = stem.absolute()
     name = stem.name
-    return (
+    paths = (
         stem.with_name(f"{name}.png"),
         stem.with_name(f"{name}@{scale}x.png"),
         stem.with_name(f"{name}.json"),
     )
+    if aseprite:
+        return (*paths, stem.with_name(f"{name}.aseprite"))
+    return paths
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -197,10 +226,13 @@ def export(
     scale: int,
     overwrite: bool = False,
     now: datetime | None = None,
+    aseprite: bool = False,
 ) -> ExportResult:
     """Write the PNG, preview, sidecar and ``last.json`` for one run."""
     _validate_arrays(rgba, palette_colors, scale, spec)
-    png_path, preview_path, sidecar_path = output_paths(output, scale)
+    targets = output_paths(output, scale, aseprite=aseprite)
+    png_path, preview_path, sidecar_path = targets[:3]
+    aseprite_path = targets[3] if aseprite else None
     if now is None:
         now = datetime.now(UTC)
     elif now.tzinfo is not None:
@@ -218,10 +250,21 @@ def export(
         model=model,
         backend=backend,
         token_usage=token_usage,
-        outputs=OutputNames(png=png_path.name, preview=preview_path.name, scale=scale),
+        outputs=OutputNames(
+            png=png_path.name,
+            preview=preview_path.name,
+            scale=scale,
+            aseprite=aseprite_path.name if aseprite_path is not None else None,
+        ),
     )
 
-    targets = (png_path, preview_path, sidecar_path)
+    # Encode before any I/O so a refused palette/grid leaves nothing behind (X-PXG-62.3).
+    ase_bytes = (
+        encode_aseprite(np.asarray(sidecar.grid, dtype=np.int64), palette_colors)
+        if aseprite_path is not None
+        else None
+    )
+
     for path in targets:
         if path.exists() and not overwrite:
             raise OutputExistsError(f"refusing to overwrite existing file: {path}")
@@ -229,11 +272,13 @@ def export(
 
     png_path.parent.mkdir(parents=True, exist_ok=True)
     preview = np.repeat(np.repeat(rgba, scale, axis=0), scale, axis=1)
-    payloads = (
+    payloads = [
         (png_path, _png_bytes(rgba)),
         (preview_path, _png_bytes(preview)),
-        (sidecar_path, (sidecar.model_dump_json(indent=2) + "\n").encode("utf-8")),
-    )
+    ]
+    if aseprite_path is not None and ase_bytes is not None:
+        payloads.append((aseprite_path, ase_bytes))
+    payloads.append((sidecar_path, (sidecar.model_dump_json(indent=2) + "\n").encode("utf-8")))
     try:
         for path, data in payloads:
             _atomic_write_bytes(path, data)
@@ -244,7 +289,7 @@ def export(
         raise
 
     last_path = _write_last(sidecar, sidecar_path)
-    return ExportResult(png_path, preview_path, sidecar_path, last_path)
+    return ExportResult(png_path, preview_path, sidecar_path, last_path, aseprite_path)
 
 
 def _write_last(sidecar: Sidecar, sidecar_path: Path) -> Path:
