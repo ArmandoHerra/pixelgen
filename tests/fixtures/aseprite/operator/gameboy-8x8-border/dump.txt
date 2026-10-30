@@ -1,0 +1,19 @@
+PXGDUMP 1
+size 8 8
+mode indexed
+transparent 4
+ncolors 5
+palette 0 8 24 32 255
+palette 1 52 104 86 255
+palette 2 136 192 112 255
+palette 3 224 248 208 255
+palette 4 0 0 0 0
+row 4 4 4 4 4 4 4 4
+row 4 0 1 1 1 2 3 4
+row 4 0 0 2 0 2 1 4
+row 4 3 2 2 2 0 0 4
+row 4 2 0 2 1 3 0 4
+row 4 2 0 0 0 3 1 4
+row 4 1 3 1 1 2 2 4
+row 4 4 4 4 4 4 4 4
+end
