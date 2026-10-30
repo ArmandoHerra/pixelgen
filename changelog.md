@@ -4,6 +4,10 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 
 ## [Unreleased]
 
+### Cycle 3 — Aseprite export
+
+- PXG-25 — an option given no value (`--size`, `-o`, `--from`) or a flag given one (`--show-spec=1`, `--version=1`) now carries the same `(see 'pixelgen <verb> --help')` hint as every other parse error.
+
 ### Cycle 2 — CLI contract hardening
 
 - PXG-15 — `-o` drops only a lowercase trailing `.png`, so `-o x.PNG` writes `x.PNG.png` and never overwrites `x.png`.

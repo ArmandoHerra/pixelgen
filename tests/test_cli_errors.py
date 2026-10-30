@@ -55,6 +55,9 @@ _LEDGER = [
     ("refine-from-unreadable", ["refine", "x", "--from", "u.json"], "pixelgen refine", "u.json"),
     ("unknown-verb", ["frobnicate"], "pixelgen", "frobnicate"),
     ("top-unknown-flag", ["--bogus"], "pixelgen", "--bogus"),
+    ("size-no-value", ["generate", "x", "--size"], "pixelgen generate", "--size"),
+    ("palette-no-value", ["generate", "x", "--palette"], "pixelgen generate", "--palette"),
+    ("from-no-value", ["refine", "x", "--from"], "pixelgen refine", "--from"),
 ]
 
 
@@ -92,6 +95,12 @@ _BREADTH = [
     ("generate-version", ["generate", "--version"], "pixelgen generate"),
     ("unknown-verb", ["frobnicate"], "pixelgen"),
     ("badint", ["generate", "x", "--size", "big"], "pixelgen generate"),
+    ("gen-o-no-value", ["generate", "x", "-o"], "pixelgen generate"),
+    ("gen-scale-no-value", ["generate", "x", "--scale"], "pixelgen generate"),
+    ("refine-from-no-value", ["refine", "x", "--from"], "pixelgen refine"),
+    ("gen-flag-given-value", ["generate", "x", "--show-spec=1"], "pixelgen generate"),
+    ("gen-pair-flag-given-value", ["generate", "x", "--outline=1"], "pixelgen generate"),
+    ("root-flag-given-value", ["--version=1"], "pixelgen"),
 ]
 
 
@@ -157,6 +166,53 @@ def test_help_surface_bytes_unchanged(env_name, argv, tmp_path):
         assert shipped.returncode == 0
     elif argv == ["--version"]:
         assert shipped.stdout == f"pixelgen {__version__}\n".encode()
+
+
+@pytest.mark.parametrize(
+    "env_extra",
+    [{"GITHUB_ACTIONS": "true", "COLUMNS": "200"}, {"COLUMNS": "200"}],
+    ids=["rich-ci", "rich-plain"],
+)
+def test_noargs_rich_path_matches_control(env_extra, tmp_path):
+    shipped = _run(_SHIPPED, [], tmp_path, env_extra)
+    control = _run(_CONTROL, [], tmp_path, env_extra)
+    assert (shipped.returncode, shipped.stdout, shipped.stderr) == (
+        control.returncode,
+        control.stdout,
+        control.stderr,
+    )
+    assert shipped.returncode == 2
+    assert shipped.stdout
+    assert shipped.stderr == b""
+
+
+def test_every_verb_parses_with_pixelgen_command():
+    import typer.main
+
+    root = typer.main.get_command(app)
+    assert isinstance(root, cli.PixelgenGroup)
+    assert {"generate", "refine", "palettes", "presets"} <= set(root.commands)
+    for name, command in root.commands.items():
+        assert isinstance(command, cli.PixelgenCommand), name
+
+
+def test_attach_parse_ctx_fills_only_a_missing_ctx():
+    from pixelgen.cli import _USAGE_ERROR, _attach_parse_ctx
+
+    outer = types.SimpleNamespace(command_path="pixelgen generate", command=None)
+    inner = types.SimpleNamespace(command_path="pixelgen generate", command=None)
+    with pytest.raises(_USAGE_ERROR) as filled:
+        with _attach_parse_ctx(outer):
+            raise _USAGE_ERROR("m")
+    assert filled.value.ctx is outer
+    with pytest.raises(_USAGE_ERROR) as kept:
+        with _attach_parse_ctx(outer):
+            raise _USAGE_ERROR("m", ctx=inner)
+    assert kept.value.ctx is inner
+    with pytest.raises(ValueError) as other:
+        with _attach_parse_ctx(outer):
+            raise ValueError("v")
+    assert not hasattr(other.value, "ctx")
 
 
 _EXISTING = [

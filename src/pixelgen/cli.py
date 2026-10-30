@@ -95,7 +95,28 @@ def _parse_errors_as_usage() -> Iterator[None]:
         _fail(_parse_error_line(exc), EXIT_USAGE)
 
 
+@contextmanager
+def _attach_parse_ctx(ctx: Any) -> Iterator[None]:
+    """Give a context-less Click usage error the context of the command being parsed."""
+    try:
+        yield
+    except _USAGE_ERROR as exc:
+        if getattr(exc, "ctx", None) is None:
+            exc.ctx = ctx
+        raise
+
+
+class PixelgenCommand(typer.core.TyperCommand):
+    def parse_args(self, ctx: Any, args: Any) -> Any:
+        with _attach_parse_ctx(ctx):
+            return super().parse_args(ctx, args)
+
+
 class PixelgenGroup(typer.core.TyperGroup):
+    def parse_args(self, ctx: Any, args: Any) -> Any:
+        with _attach_parse_ctx(ctx):
+            return super().parse_args(ctx, args)
+
     def make_context(self, info_name: Any, args: Any, parent: Any = None, **extra: Any) -> Any:
         with _parse_errors_as_usage():
             return super().make_context(info_name, args, parent=parent, **extra)
@@ -211,7 +232,7 @@ def _swatch_text(colours: Any) -> Text:
     return text
 
 
-@app.command("palettes")
+@app.command("palettes", cls=PixelgenCommand)
 @error_boundary
 def palettes_command() -> None:
     """List the built-in palettes with colour counts and swatches."""
@@ -240,7 +261,7 @@ def _format_value(value: Any) -> str:
     return str(value)
 
 
-@app.command("presets")
+@app.command("presets", cls=PixelgenCommand)
 @error_boundary
 def presets_command() -> None:
     """List the built-in style presets and every setting each one applies."""
@@ -264,7 +285,7 @@ def _print_spec(spec: ArtSpec) -> None:
     _console().print(table)
 
 
-@app.command("generate")
+@app.command("generate", cls=PixelgenCommand)
 @error_boundary
 def generate(
     prompt: str = typer.Argument(..., help="What to draw, in plain language."),
@@ -344,7 +365,7 @@ def generate(
     print_summary(result)
 
 
-@app.command("refine")
+@app.command("refine", cls=PixelgenCommand)
 @error_boundary
 def refine(
     instruction: str = typer.Argument(..., help="The edit to make, in plain language."),
