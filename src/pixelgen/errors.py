@@ -52,3 +52,7 @@ class OutputExistsError(PixelgenError):
 
 class NoPreviousResultError(PixelgenError):
     default_message = "There is no previous result to refine; pass --from or generate first."
+
+
+class AsepriteError(PixelgenError):
+    default_message = "The .aseprite file could not be encoded."
