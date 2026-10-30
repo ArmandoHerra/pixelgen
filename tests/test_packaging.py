@@ -31,3 +31,9 @@ def test_license():
     text = (ROOT / "LICENSE").read_text()
     assert text.startswith("MIT License")
     assert "Copyright (c) 2026 Armando Herra" in text
+
+
+def test_build_config_ships_no_tests_in_the_wheel():
+    # Hatchling auto-detects src/pixelgen, so the wheel carries only pixelgen/** today. A
+    # [tool.hatch...] table (force-include, sources, ...) is how tests/ content could join it.
+    assert set(DATA["tool"]) == {"pytest", "ruff"}
