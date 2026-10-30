@@ -77,6 +77,7 @@ Claude first infers a spec from the prompt (size, palette, view and so on), then
 | `-o`, `--output` | — | Output path. Default: `out/<prompt-slug>.png`, never overwriting (a `_2` suffix is added). An explicit path overwrites. |
 | `--backend` | `llm-grid` | Generator backend. `diffusion` is a stub that refuses to run. |
 | `--show-spec` | `false` | Print the resolved spec as a table before generating. |
+| `--aseprite/--no-aseprite` | `false` | Also write `<name>.aseprite` next to the PNG: an indexed Aseprite/LibreSprite file with the palette, one layer and one frame. Palettes larger than the Aseprite indexed limit (255 entries) are refused before any API call. |
 
 The output path is a base name: only a trailing `.png` is dropped. `-o out/x.png` writes `out/x.png`, `out/x@8x.png` and `out/x.json`, but `-o out/x.jpg` writes `out/x.jpg.png`, `out/x.jpg@8x.png` and `out/x.jpg.json` (the suffix is appended, not replaced).
 
@@ -87,7 +88,7 @@ pixelgen refine "give it a green leaf"
 pixelgen refine "make the slime blue" --from out/slime.json
 ```
 
-`refine` sends your edit instruction, the previous spec and the previous grid to the model and writes a new version next to the source: `out/slime.json` becomes `out/slime-v2.png`, `out/slime-v2@8x.png` and `out/slime-v2.json`, the next refine gives `slime-v3`, and so on; existing files are never overwritten. Without `--from` it refines the last result, which `pixelgen` records in `last.json` under `PIXELGEN_HOME`. The size and palette of the source are kept; if the model tried to change them, a one-line `pixelgen: note:` on stderr says the change was ignored.
+`refine` sends your edit instruction, the previous spec and the previous grid to the model and writes a new version next to the source: `out/slime.json` becomes `out/slime-v2.png`, `out/slime-v2@8x.png` and `out/slime-v2.json`, the next refine gives `slime-v3`, and so on; existing files are never overwritten. Without `--from` it refines the last result, which `pixelgen` records in `last.json` under `PIXELGEN_HOME`. The size and palette of the source are kept; if the model tried to change them, a one-line `pixelgen: note:` on stderr says the change was ignored. `--aseprite` also writes `slime-v2.aseprite`, and it is never carried over from the source, so pass it on each refine that needs one.
 
 ### palettes
 
@@ -188,13 +189,12 @@ Every failure prints one `pixelgen: error:` line on stderr and no traceback.
 | Diffusion backend | `The diffusion backend is not implemented` | 1 | Use the default `--backend llm-grid`. |
 | Nothing to refine | `no previous result` | 1 | Run `generate` first, or pass `--from` a sidecar `.json`. |
 
-Exit codes: `0` success. `2` means pixelgen refused your input before spending anything: a flag combination, a value out of range, an unknown palette, preset or backend, an empty prompt or instruction, a `--from` file it cannot read. `1` covers everything else: a missing API key, an output directory or `PIXELGEN_HOME` that is not a writable directory (checked before the first API call), model or network failures, and the diffusion stub.
+Exit codes: `0` success. `2` means pixelgen refused your input before spending anything: a flag combination, a value out of range, an unknown palette, preset or backend, an empty prompt or instruction, a `--from` file it cannot read, a palette larger than the Aseprite indexed limit (255 entries) with `--aseprite`. `1` covers everything else: a missing API key, an output directory or `PIXELGEN_HOME` that is not a writable directory (checked before the first API call), model or network failures, and the diffusion stub.
 
 ## Out of scope
 
 - A working diffusion backend (the stub fails with a clear message).
 - Animation and sprite sheet output.
-- Aseprite export.
 - A GUI.
 - In-terminal image rendering.
 

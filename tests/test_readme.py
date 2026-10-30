@@ -571,11 +571,15 @@ def test_error_table_quotes_real_messages(label, monkeypatch, tmp_path):
 # --- AC13 - AC15 -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "item", ["diffusion", "animation", "sprite sheet", "Aseprite", "GUI", "in-terminal"]
-)
+@pytest.mark.parametrize("item", ["diffusion", "animation", "sprite sheet", "GUI", "in-terminal"])
 def test_out_of_scope_lists_the_five_items(item):
     assert item.lower() in _section("Out of scope").lower()
+
+
+def test_readme_documents_aseprite_for_generate_and_refine():
+    assert "--aseprite" in _section("generate", level=3)
+    assert "--aseprite" in _section("refine", level=3)
+    assert "aseprite" not in _section("Out of scope").lower()
 
 
 def test_readme_examples_section_links_resolve():

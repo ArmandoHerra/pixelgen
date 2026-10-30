@@ -15,9 +15,11 @@ from typing import Any
 
 import numpy as np
 
+from pixelgen.aseprite import MAX_ASEPRITE_COLOURS
 from pixelgen.backends.base import Generator, create_generator
 from pixelgen.config import pixelgen_home
 from pixelgen.errors import (
+    AsepriteError,
     NoPreviousResultError,
     OutputExistsError,
     PaletteError,
@@ -62,11 +64,12 @@ def slugify_prompt(prompt: str) -> str:
     return slug or FALLBACK_SLUG
 
 
-def next_free_output(out_dir: Path, slug: str, scale: int) -> Path:
-    """First of ``slug``, ``slug_2`` ... whose three output files all do not exist."""
+def next_free_output(out_dir: Path, slug: str, scale: int, *, aseprite: bool = False) -> Path:
+    """First of ``slug``, ``slug_2`` ... whose output files (three, or four with ``.aseprite``)
+    all do not exist."""
     for index in range(1, MAX_COLLISION_INDEX + 1):
         candidate = out_dir / (slug if index == 1 else f"{slug}_{index}")
-        if not any(path.exists() for path in output_paths(candidate, scale)):
+        if not any(path.exists() for path in output_paths(candidate, scale, aseprite=aseprite)):
             return candidate
     raise OutputExistsError(
         f"no free output name for '{slug}' in {out_dir} (tried up to _{MAX_COLLISION_INDEX})"
@@ -108,6 +111,8 @@ def preflight_generate(
     output: Path | None,
     scale: int,
     out_dir: Path = DEFAULT_OUT_DIR,
+    *,
+    aseprite: bool = False,
 ) -> Path:
     """Everything knowable about the filesystem before the first paid call; writes nothing.
 
@@ -116,7 +121,7 @@ def preflight_generate(
     """
     if output is None:
         _check_writable_dir(out_dir, "output directory")
-        resolved = next_free_output(out_dir, slugify_prompt(prompt), scale)
+        resolved = next_free_output(out_dir, slugify_prompt(prompt), scale, aseprite=aseprite)
     else:
         resolved = output
         _check_writable_dir(output.absolute().parent, "output")
@@ -129,17 +134,37 @@ def ensure_palette_known(name: str) -> None:
         raise PaletteError(f"unknown palette '{name}'; available: {', '.join(list_palettes())}")
 
 
+def aseprite_palette_names() -> tuple[str, ...]:
+    """Palettes an ``.aseprite`` file can hold (at most ``MAX_ASEPRITE_COLOURS`` colours)."""
+    return tuple(
+        name for name in list_palettes() if len(load_palette(name)) <= MAX_ASEPRITE_COLOURS
+    )
+
+
+def check_aseprite_palette(name: str) -> None:
+    """Refuse, before any spend, a palette too large for an indexed ``.aseprite`` file."""
+    count = len(load_palette(name))
+    if count > MAX_ASEPRITE_COLOURS:
+        raise AsepriteError(
+            f"palette '{name}' has {count} colours; --aseprite supports at most "
+            f"{MAX_ASEPRITE_COLOURS}"
+        )
+
+
 def build_spec(
     prompt: str,
     preset_name: str | None,
     cli_overrides: Mapping[str, Any],
     llm: Any = None,
+    *,
+    aseprite: bool = False,
 ) -> tuple[ArtSpec, InferredSpec | None]:
     """defaults < preset < LLM-inferred < CLI flags; the LLM is called only when given."""
     preset = load_preset(preset_name) if preset_name else None
     inferred: InferredSpec | None = None
     if llm is not None:
-        constraints = InferConstraints(palette_names=tuple(list_palettes()))
+        names = aseprite_palette_names() if aseprite else tuple(list_palettes())
+        constraints = InferConstraints(palette_names=names)
         inferred = infer_spec(prompt, llm, constraints)
     spec = resolve_spec(
         {"subject": prompt},
@@ -176,6 +201,7 @@ def render_grid(
     backend: str,
     model: str | None,
     token_usage: TokenUsage,
+    aseprite: bool = False,
 ) -> PipelineResult:
     """grid -> RGBA -> ``pixelate()`` -> export. PXG-12 calls this unchanged."""
     rgba = grid_to_rgba(np.asarray(grid), palette_colors)
@@ -194,6 +220,7 @@ def render_grid(
         token_usage=token_usage,
         scale=scale,
         overwrite=overwrite,
+        aseprite=aseprite,
     )
     return PipelineResult(spec=spec, grid=grid, image=image, export=result)
 
@@ -211,15 +238,16 @@ def run_generate(
     scale: int,
     out_dir: Path = DEFAULT_OUT_DIR,
     on_spec: Callable[[ArtSpec], None] | None = None,
+    aseprite: bool = False,
 ) -> PipelineResult:
-    spec, inferred = build_spec(prompt, preset_name, cli_overrides, llm)
+    spec, inferred = build_spec(prompt, preset_name, cli_overrides, llm, aseprite=aseprite)
     palette = load_palette(spec.palette)
     if on_spec is not None:
         on_spec(spec)
     generated = generator.generate(spec, palette)
     usages = [generated.usage] if inferred is None else [inferred.usage, generated.usage]
     if output is None:  # callers that did not preflight resolve the default name here
-        output = next_free_output(out_dir, slugify_prompt(prompt), scale)
+        output = next_free_output(out_dir, slugify_prompt(prompt), scale, aseprite=aseprite)
         overwrite = False
     return render_grid(
         spec,
@@ -231,6 +259,7 @@ def run_generate(
         backend=backend_name,
         model=getattr(llm, "model", None),
         token_usage=to_token_usage(*usages),
+        aseprite=aseprite,
     )
 
 
@@ -273,7 +302,7 @@ def next_version_base(source_path: Path) -> Path:
     base, input_n = (match.group("base"), int(match.group("n"))) if match else (stem, 1)
     directory = source_path.parent
     pattern = re.compile(
-        rf"^{re.escape(base)}-v(?P<n>{_VERSION_SUFFIX})(?:\.json|\.png|@[0-9]+x\.png)$"
+        rf"^{re.escape(base)}-v(?P<n>{_VERSION_SUFFIX})(?:\.json|\.png|@[0-9]+x\.png|\.aseprite)$"
     )
     highest = 0
     if directory.is_dir():
@@ -292,7 +321,9 @@ def preflight_refine(source: RefineSource) -> Path:
     return base
 
 
-def run_refine(source: RefineSource, instruction: str, *, llm: Any) -> RefineOutcome:
+def run_refine(
+    source: RefineSource, instruction: str, *, llm: Any, aseprite: bool = False
+) -> RefineOutcome:
     previous = source.sidecar
     palette = load_palette(previous.spec.palette)
     generator = create_generator("llm-grid", llm=llm)
@@ -312,5 +343,6 @@ def run_refine(source: RefineSource, instruction: str, *, llm: Any) -> RefineOut
         backend="llm-grid",
         model=getattr(llm, "model", None),
         token_usage=to_token_usage(refined.usage),
+        aseprite=aseprite,
     )
     return RefineOutcome(result=result, ignored=ignored)

@@ -7,6 +7,11 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 ### Cycle 3 — Aseprite export
 
 - PXG-25 — an option given no value (`--size`, `-o`, `--from`) or a flag given one (`--show-spec=1`, `--version=1`) now carries the same `(see 'pixelgen <verb> --help')` hint as every other parse error.
+- PXG-24 — an independent standard-library `.aseprite` reader serves as the test oracle, anchored to vendored MIT Aseprite fixtures.
+- PXG-26 — a standard-library writer for palette-indexed `.aseprite` files: one layer, one frame, the transparent slot after the palette, at most 255 colours.
+- PXG-27 — `.aseprite` joins the all-or-nothing export set, and the sidecar records it as the optional `outputs.aseprite`; `schema_version` stays 1.
+- PXG-29 — `generate` and `refine` take `--aseprite/--no-aseprite` (default off); default names and `-vN` versions step past a stray `.aseprite`, and a palette over 255 colours is refused before any API call.
+- Compatibility — pixelgen from cycles 1 and 2 rejects a sidecar or `last.json` that records `outputs.aseprite` (unknown keys are forbidden); sidecars written without `--aseprite` are unchanged.
 
 ### Cycle 2 — CLI contract hardening
 

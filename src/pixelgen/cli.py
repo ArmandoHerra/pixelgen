@@ -192,6 +192,7 @@ def print_summary(result: pipeline.PipelineResult) -> None:
     typer.echo(
         f"Wrote {out.png_path} ({spec.width}\u00d7{spec.height}), "
         f"preview {out.preview_path}, sidecar {out.sidecar_path}"
+        + (f", aseprite {out.aseprite_path}" if out.aseprite_path is not None else "")
     )
 
 
@@ -311,6 +312,11 @@ def generate(
     ] = None,
     backend: str = typer.Option("llm-grid", "--backend", help="Generator backend."),
     show_spec: bool = typer.Option(False, "--show-spec", help="Print the resolved spec first."),
+    aseprite: bool = typer.Option(
+        False,
+        "--aseprite/--no-aseprite",
+        help="Also write <name>.aseprite (indexed; palettes of up to 255 colours).",
+    ),
 ) -> None:
     """Generate pixel art from PROMPT."""
     with usage_phase():
@@ -342,10 +348,12 @@ def generate(
             "view": view,
             "seed": seed,
         }
-        pipeline.build_spec(prompt, preset, cli_overrides, llm=None)
+        base_spec, _ = pipeline.build_spec(prompt, preset, cli_overrides, llm=None)
+        if aseprite:
+            pipeline.check_aseprite_palette(base_spec.palette)
 
     pipeline.ensure_backend_available(backend)
-    resolved_output = pipeline.preflight_generate(prompt, output, scale)
+    resolved_output = pipeline.preflight_generate(prompt, output, scale, aseprite=aseprite)
 
     _require_api_key()
     llm = make_llm()
@@ -361,6 +369,7 @@ def generate(
         overwrite=output is not None,
         scale=scale,
         on_spec=_print_spec if show_spec else None,
+        aseprite=aseprite,
     )
     print_summary(result)
 
@@ -373,6 +382,11 @@ def refine(
         Path | None,
         typer.Option("--from", help="Sidecar .json to refine (default: the last result)."),
     ] = None,
+    aseprite: bool = typer.Option(
+        False,
+        "--aseprite/--no-aseprite",
+        help="Also write <name>.aseprite (indexed; palettes of up to 255 colours).",
+    ),
 ) -> None:
     """Edit the last result (or --from a sidecar) and write the next -vN version."""
     source = None
@@ -384,11 +398,14 @@ def refine(
             source = pipeline.load_refine_source(from_)
     if source is None:
         source = pipeline.load_refine_source(None)
+    if aseprite:
+        with usage_phase():
+            pipeline.check_aseprite_palette(source.sidecar.spec.palette)
     pipeline.preflight_refine(source)
 
     _require_api_key()
     llm = make_llm()
-    outcome = pipeline.run_refine(source, instruction, llm=llm)
+    outcome = pipeline.run_refine(source, instruction, llm=llm, aseprite=aseprite)
     print_summary(outcome.result)
     if outcome.ignored:
         typer.echo(
