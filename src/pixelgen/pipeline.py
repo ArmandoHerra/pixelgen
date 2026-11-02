@@ -1,6 +1,9 @@
 """The UI-free generate pipeline: spec -> backend -> pixelate -> export (PXG-11).
 
 No Typer or Rich in here: refine (PXG-12) reuses ``render_grid`` and the helpers unchanged.
+``render_result`` (PXG-35) dispatches on the result kind: index grids go through
+``render_grid``; rasters go through ``pixelate_raster`` first. The dither forcing of
+``INDEX_GRID_BACKENDS`` applies to index-grid results only.
 """
 
 from __future__ import annotations
@@ -36,12 +39,13 @@ from pixelgen.export import (
     output_paths,
 )
 from pixelgen.palettes import list_palettes, load_palette
-from pixelgen.pixelate import grid_to_rgba, pixelate
+from pixelgen.pixelate import grid_to_rgba, pixelate, pixelate_raster, rgba_to_grid
 from pixelgen.presets import load_preset
 from pixelgen.spec import ArtSpec, InferConstraints, InferredSpec, infer_spec, resolve_spec
 
-# Backends whose grid is already palette-exact: dithering it would only perturb the model's
-# colours (X-PXG-28). The sidecar still records the user's dither.
+# Backends whose index-grid results are already palette-exact: dithering them would only
+# perturb the model's colours (X-PXG-28). Applies to index-grid results only, never to rasters.
+# The sidecar still records the user's dither.
 INDEX_GRID_BACKENDS = frozenset({"llm-grid"})
 SLUG_MAX = 48
 FALLBACK_SLUG = "pixelgen"
@@ -242,6 +246,61 @@ def render_grid(
     return PipelineResult(spec=spec, grid=grid, image=image, export=result)
 
 
+def render_result(
+    spec: ArtSpec,
+    generated: Any,
+    palette_colors: np.ndarray,
+    *,
+    output: Path,
+    scale: int,
+    overwrite: bool,
+    backend: str,
+    model: str | None,
+    token_usage: TokenUsage,
+    aseprite: bool = False,
+) -> PipelineResult:
+    """Render a ``GenerationResult``: an index grid via ``render_grid``, a raster via D4.
+
+    A raster is pixelated once at the user's dither (``pixelate_raster``); the sidecar grid
+    is that index grid before outline and background (X-PXG-112), rendered exactly as
+    ``render_grid`` renders an llm-grid grid.
+    """
+    if generated.grid is not None:
+        return render_grid(
+            spec,
+            generated.grid,
+            palette_colors,
+            output=output,
+            scale=scale,
+            overwrite=overwrite,
+            backend=backend,
+            model=model,
+            token_usage=token_usage,
+            aseprite=aseprite,
+        )
+    indexed = pixelate_raster(generated.image, spec, palette_colors)
+    grid = rgba_to_grid(indexed, palette_colors).tolist()
+    image = pixelate(
+        grid_to_rgba(np.asarray(grid), palette_colors),
+        spec.model_copy(update={"dither": "none"}),
+        palette_colors,
+    )
+    result = export(
+        output,
+        image,
+        spec=spec,
+        grid=grid,
+        palette_colors=palette_colors,
+        model=model,
+        backend=backend,
+        token_usage=token_usage,
+        scale=scale,
+        overwrite=overwrite,
+        aseprite=aseprite,
+    )
+    return PipelineResult(spec=spec, grid=grid, image=image, export=result)
+
+
 def run_generate(
     prompt: str,
     *,
@@ -266,9 +325,9 @@ def run_generate(
     if output is None:  # callers that did not preflight resolve the default name here
         output = next_free_output(out_dir, slugify_prompt(prompt), scale, aseprite=aseprite)
         overwrite = False
-    return render_grid(
+    return render_result(
         spec,
-        generated.grid,
+        generated,
         palette,
         output=output,
         scale=scale,

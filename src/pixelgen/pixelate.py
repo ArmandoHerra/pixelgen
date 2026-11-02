@@ -3,6 +3,10 @@
 Every image is an RGBA ``uint8`` array of shape ``(H, W, 4)``. ``pixelate`` composes the
 steps; its output has exactly ``spec.height x spec.width`` pixels, each either a palette
 colour (alpha 255) or canonical transparent ``(0, 0, 0, 0)``.
+
+Two entry points: ``pixelate`` (centre-sampled downscale, for index grids and rasters at the
+target size) and ``pixelate_raster`` (binned mode-of-block downscale for a backend raster,
+PXG-35; stops before outline and background).
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from pixelgen.errors import SpecError
 from pixelgen.spec import ArtSpec
 
 TRANSPARENT = (0, 0, 0, 0)
+BLOCK_BIN_BITS = 4  # block_downscale votes on 16 levels per channel (4096 bins)
 ALPHA_THRESHOLD = 128  # alpha < 128 is transparent, >= 128 is opaque
 BAYER_4X4 = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.int64)
 BAYER_SPREAD = 64  # offset = ((M + 0.5) / 16 - 0.5) * BAYER_SPREAD == 4 * M - 30
@@ -77,6 +82,76 @@ def downscale(img: np.ndarray, w: int, h: int) -> np.ndarray:
     ys = ((2 * np.arange(h, dtype=np.int64) + 1) * src_h) // (2 * h)
     xs = ((2 * np.arange(w, dtype=np.int64) + 1) * src_w) // (2 * w)
     return _out(img[ys[:, None], xs[None, :]])
+
+
+def _block_axis(src: int, n: int) -> tuple[np.ndarray, int, np.ndarray]:
+    """Per-axis block map: (block id per source index, block count, block id per output)."""
+    out = np.arange(n, dtype=np.int64)
+    if src >= n:
+        lo = (out * src) // n
+        ids = np.searchsorted(lo, np.arange(src, dtype=np.int64), side="right") - 1
+        return ids.astype(np.int64), n, out
+    return np.arange(src, dtype=np.int64), src, (out * src) // n
+
+
+def block_downscale(img: np.ndarray, w: int, h: int) -> np.ndarray:
+    """Binned mode-of-block resize to ``h x w`` (PXG-35).
+
+    Each output pixel covers a block of source pixels (blocks partition the source when it
+    is larger than the target; a smaller source is replicated). Source pixels with alpha
+    below ``ALPHA_THRESHOLD`` vote transparent; the others vote for a 16-level-per-channel
+    colour bin. The most voted bin wins (ties: lowest bin key) and the block takes the mean
+    of that bin's pixels. A block is transparent only when transparent votes strictly exceed
+    the winning bin's. Output alpha is 0 or 255; transparent pixels are ``(0, 0, 0, 0)``.
+    """
+    _check_rgba(img)
+    if w < 1 or h < 1:
+        raise ValueError(f"target size must be >= 1x1, got {w}x{h}")
+    src_h, src_w = img.shape[:2]
+    by, nby, rows = _block_axis(src_h, h)
+    bx, nbx, cols = _block_axis(src_w, w)
+    nblocks = nby * nbx
+    bid = (by[:, None] * nbx + bx[None, :]).ravel()
+    flat = img.reshape(-1, 4)
+    opaque = flat[:, 3] >= ALPHA_THRESHOLD
+    shift = BLOCK_BIN_BITS
+    keep = 8 - shift
+    key = (
+        ((flat[:, 0].astype(np.int64) >> keep) << (2 * shift))
+        | ((flat[:, 1].astype(np.int64) >> keep) << shift)
+        | (flat[:, 2].astype(np.int64) >> keep)
+    )
+    nbins = 1 << (3 * shift)
+    trans_votes = np.bincount(bid[~opaque], minlength=nblocks)
+    win_key = np.zeros(nblocks, dtype=np.int64)
+    win_count = np.zeros(nblocks, dtype=np.int64)
+    if opaque.any():
+        combined = bid[opaque] * nbins + key[opaque]
+        uniq, counts = np.unique(combined, return_counts=True)
+        ub, uk = uniq // nbins, uniq % nbins
+        order = np.lexsort((uk, -counts, ub))
+        ub_s = ub[order]
+        _, first = np.unique(ub_s, return_index=True)
+        pick = order[first]
+        win_key[ub[pick]] = uk[pick]
+        win_count[ub[pick]] = counts[pick]
+        member = opaque.copy()
+        member[opaque] = key[opaque] == win_key[bid[opaque]]
+        sel = flat[member]
+        sums = [
+            np.bincount(bid[member], weights=sel[:, c], minlength=nblocks).astype(np.int64)
+            for c in range(3)
+        ]
+    else:
+        sums = [np.zeros(nblocks, dtype=np.int64) for _ in range(3)]
+    n = np.maximum(win_count, 1)
+    block = np.zeros((nblocks, 4), dtype=np.uint8)
+    solid = (win_count > 0) & (trans_votes <= win_count)
+    for c in range(3):
+        block[solid, c] = ((sums[c] + n // 2) // n)[solid]
+    block[solid, 3] = 255
+    grid = block.reshape(nby, nbx, 4)
+    return _out(grid[rows[:, None], cols[None, :]])
 
 
 # --------------------------------------------------------------------------- quantize
@@ -255,22 +330,50 @@ def rgba_to_grid(img: np.ndarray, palette: np.ndarray) -> np.ndarray:
 _cleanup_step = cleanup
 
 
-def pixelate(
-    img: np.ndarray, spec: ArtSpec, palette: np.ndarray, *, cleanup: bool | None = None
+def _index_steps(
+    out: np.ndarray, spec: ArtSpec, palette: np.ndarray, *, cleanup: bool | None = None
 ) -> np.ndarray:
-    """The only sanctioned sequencing: downscale, quantize, cleanup, outline, background."""
-    _check_palette(palette)
-    if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[2] == 3:
-        if img.dtype != np.uint8:
-            raise ValueError("img must be a uint8 numpy array")
-        alpha = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
-        img = np.concatenate([img, alpha], axis=2)
-    out = downscale(img, spec.width, spec.height)
+    """Quantize at ``spec.dither``, then cleanup (default: only above 32 px on a side)."""
     out = quantize(out, palette, spec.dither)
     if cleanup is None:
         cleanup = spec.width > 32 or spec.height > 32
     if cleanup:
         out = _cleanup_step(out)
+    return out
+
+
+def _with_alpha(img: np.ndarray) -> np.ndarray:
+    if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[2] == 3:
+        if img.dtype != np.uint8:
+            raise ValueError("img must be a uint8 numpy array")
+        alpha = np.full(img.shape[:2] + (1,), 255, dtype=np.uint8)
+        img = np.concatenate([img, alpha], axis=2)
+    return img
+
+
+def pixelate(
+    img: np.ndarray, spec: ArtSpec, palette: np.ndarray, *, cleanup: bool | None = None
+) -> np.ndarray:
+    """The only sanctioned sequencing: downscale, quantize, cleanup, outline, background."""
+    _check_palette(palette)
+    img = _with_alpha(img)
+    out = downscale(img, spec.width, spec.height)
+    out = _index_steps(out, spec, palette, cleanup=cleanup)
     if spec.outline:
         out = add_outline(out, palette[darkest_index(palette)])
     return apply_background(out, spec, palette)
+
+
+def pixelate_raster(img: np.ndarray, spec: ArtSpec, palette: np.ndarray) -> np.ndarray:
+    """Raster path: ``block_downscale``, quantize at the user's dither, cleanup (PXG-35).
+
+    Returns a palette-exact ``(spec.height, spec.width, 4)`` image **before** outline and
+    background (X-PXG-112): its ``rgba_to_grid`` is the sidecar grid, and the render step
+    applies outline and background once, as it does for an llm-grid grid.
+    """
+    _check_palette(palette)
+    img = _with_alpha(img)
+    _check_rgba(img)
+    # PXG-38: key_background(img) is called here (before block_downscale and quantize).
+    out = block_downscale(img, spec.width, spec.height)
+    return _index_steps(out, spec, palette, cleanup=None)

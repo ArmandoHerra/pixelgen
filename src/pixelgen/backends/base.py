@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import abc
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -38,9 +38,28 @@ class GenerationUsage:
 
 @dataclass(frozen=True)
 class GenerationResult:
-    grid: list[list[int]]  # exactly height rows of width ints
-    generated_size: tuple[int, int]  # (gw, gh) as requested from the model
+    """Exactly one payload: an index ``grid`` or an RGB(A) ``image`` raster (PXG-35)."""
+
+    generated_size: tuple[int, int]  # (gw, gh): requested grid size, or the raster's (W, H)
     usage: GenerationUsage
+    grid: list[list[int]] | None = field(default=None, kw_only=True)  # height rows of width ints
+    image: np.ndarray | None = field(default=None, kw_only=True, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if (self.grid is None) == (self.image is None):
+            raise ValueError("GenerationResult needs exactly one of grid or image")
+        img = self.image
+        if img is not None and not (
+            isinstance(img, np.ndarray)
+            and img.dtype == np.uint8
+            and img.ndim == 3
+            and img.shape[2] in (3, 4)
+            and img.shape[0] >= 1
+            and img.shape[1] >= 1
+        ):
+            raise ValueError(
+                "GenerationResult.image must be a uint8 array of shape (H, W, 3) or (H, W, 4)"
+            )
 
 
 @dataclass(frozen=True)
