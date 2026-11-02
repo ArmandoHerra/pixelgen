@@ -352,8 +352,11 @@ def _check_version(obj: dict[str, Any], label: str, what: str) -> None:
         raise SpecError(f"{label}: {what} has no schema_version")
     version = obj["schema_version"]
     if type(version) is not int or version != 1:
+        shown = (
+            f"<{type(version).__name__}>" if isinstance(version, (list, dict)) else repr(version)
+        )
         raise SpecError(
-            f"{label}: unsupported {what} schema_version {version!r} (this pixelgen reads 1)"
+            f"{label}: unsupported {what} schema_version {shown} (this pixelgen reads 1)"
         )
 
 
@@ -379,6 +382,8 @@ def _read_json(path: Path, what: str) -> Any:
         return json.loads(text)
     except ValueError:
         raise SpecError(f"{path}: {what} is not valid JSON") from None
+    except RecursionError:
+        raise SpecError(f"{path}: {what} nests too deeply to parse") from None
 
 
 def load_sidecar(path: Path) -> Sidecar:
