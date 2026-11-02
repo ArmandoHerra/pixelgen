@@ -7,9 +7,10 @@ against real Aseprite bytes vendored under `tests/fixtures/aseprite/`.
 
 Usage as a script (zero-spend artefact probe):
 
-    python tests/aseprite_oracle.py FILE [--sidecar JSON]
+    python tests/aseprite_oracle.py FILE [--sidecar JSON] [--png PNG]
 
-Exit 0 on a clean parse (and sidecar match), 1 on a mismatch or any failure, 2 on a usage error.
+Exit 0 on a clean parse (and sidecar / png match), 1 on a mismatch or any failure, 2 on a usage
+error.
 """
 
 import argparse
@@ -427,10 +428,169 @@ def compare_with_sidecar(ase: AseFile, sidecar: dict) -> list[str]:
     return lines
 
 
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_PNG_CHANNELS = {2: 3, 3: 1, 6: 4}
+
+
+def _png_error(msg: str) -> AseFormatError:
+    return AseFormatError(f"png: {msg}")
+
+
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _unfilter(raw: bytes, width: int, height: int, bpp: int) -> list[bytearray]:
+    stride = width * bpp
+    rows: list[bytearray] = []
+    prev = bytearray(stride)
+    for y in range(height):
+        base = y * (stride + 1)
+        ftype = raw[base]
+        cur = bytearray(raw[base + 1 : base + 1 + stride])
+        if ftype not in (0, 1, 2, 3, 4):
+            raise _png_error(f"row {y} has unknown filter type {ftype}")
+        for i in range(stride):
+            a = cur[i - bpp] if i >= bpp else 0
+            b = prev[i]
+            c = prev[i - bpp] if i >= bpp else 0
+            if ftype == 1:
+                cur[i] = (cur[i] + a) & 0xFF
+            elif ftype == 2:
+                cur[i] = (cur[i] + b) & 0xFF
+            elif ftype == 3:
+                cur[i] = (cur[i] + ((a + b) >> 1)) & 0xFF
+            elif ftype == 4:
+                cur[i] = (cur[i] + _paeth(a, b, c)) & 0xFF
+        rows.append(cur)
+        prev = cur
+    return rows
+
+
+def decode_png(data: bytes) -> tuple[int, int, list[list[tuple[int, int, int, int]]]]:
+    """Decode an 8-bit non-interlaced PNG (colour type 2, 3 or 6) to (width, height, RGBA rows).
+
+    Raises `AseFormatError` with a message beginning `png: ` on any other input.
+    """
+    if data[:8] != PNG_SIGNATURE:
+        raise _png_error("bad signature")
+    pos = 8
+    ihdr: tuple | None = None
+    plte: bytes | None = None
+    trns = b""
+    idat: list[bytes] = []
+    first = True
+    ended = False
+    while pos < len(data):
+        if pos + 8 > len(data):
+            raise _png_error("truncated chunk header")
+        length, ctype = struct.unpack_from(">I4s", data, pos)
+        end = pos + 8 + length
+        if end + 4 > len(data):
+            raise _png_error(f"chunk {ctype!r} overruns the file")
+        body = data[pos + 8 : end]
+        (crc,) = struct.unpack_from(">I", data, end)
+        if zlib.crc32(ctype + body) != crc:
+            raise _png_error(f"chunk {ctype!r} CRC mismatch")
+        if first and ctype != b"IHDR":
+            raise _png_error("IHDR is not the first chunk")
+        first = False
+        if ctype == b"IHDR":
+            if length != 13 or ihdr is not None:
+                raise _png_error("bad IHDR")
+            ihdr = struct.unpack(">IIBBBBB", body)
+        elif ctype == b"PLTE":
+            plte = body
+        elif ctype == b"tRNS":
+            trns = body
+        elif ctype == b"IDAT":
+            idat.append(body)
+        elif ctype == b"IEND":
+            ended = True
+            pos = end + 4
+            break
+        pos = end + 4
+    if ihdr is None:
+        raise _png_error("no IHDR")
+    if not ended:
+        raise _png_error("no IEND")
+    if pos != len(data):
+        raise _png_error("trailing data after IEND")
+    width, height, depth, ctype_, comp, filt, interlace = ihdr
+    if depth != 8:
+        raise _png_error(f"unsupported bit depth {depth}")
+    if ctype_ not in _PNG_CHANNELS:
+        raise _png_error(f"unsupported colour type {ctype_}")
+    if comp != 0 or filt != 0:
+        raise _png_error("unsupported compression or filter method")
+    if interlace != 0:
+        raise _png_error("interlaced PNG is unsupported")
+    if width < 1 or height < 1:
+        raise _png_error("empty image")
+    bpp = _PNG_CHANNELS[ctype_]
+    if ctype_ == 3 and plte is None:
+        raise _png_error("colour type 3 without PLTE")
+    expected = height * (1 + width * bpp)
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error as exc:
+        raise _png_error("IDAT zlib stream is corrupt") from exc
+    if len(raw) != expected:
+        raise _png_error(f"inflated length {len(raw)} != {expected}")
+    rows = _unfilter(raw, width, height, bpp)
+    out: list[list[tuple[int, int, int, int]]] = []
+    if ctype_ == 3:
+        assert plte is not None
+        n = len(plte) // 3
+        table = [
+            (plte[3 * i], plte[3 * i + 1], plte[3 * i + 2], trns[i] if i < len(trns) else 255)
+            for i in range(n)
+        ]
+        for row in rows:
+            if row and max(row) >= n:
+                raise _png_error(f"palette index {max(row)} past PLTE of {n} entries")
+            out.append([table[v] for v in row])
+    elif ctype_ == 2:
+        out = [[(r[i], r[i + 1], r[i + 2], 255) for i in range(0, len(r), 3)] for r in rows]
+    else:
+        out = [[tuple(r[i : i + 4]) for i in range(0, len(r), 4)] for r in rows]  # type: ignore[misc]
+    return width, height, out
+
+
+def compare_with_png(ase: AseFile, png: bytes) -> list[str]:
+    """Pixel parity of frame 0 against a PNG; alpha 0 in both is equal whatever the RGB."""
+    pw, ph, prows = decode_png(png)
+    if (ase.width, ase.height) != (pw, ph):
+        return [f"MISMATCH png size: file {ase.width}x{ase.height} != png {pw}x{ph}"]
+    frows = composite_rgba(ase, 0)
+    first: tuple[int, int, tuple, tuple] | None = None
+    count = 0
+    for y in range(ph):
+        for x in range(pw):
+            f, p = frows[y][x], prows[y][x]
+            if f[3] == 0 and p[3] == 0:
+                continue
+            if f != p:
+                count += 1
+                if first is None:
+                    first = (x, y, f, p)
+    if first is None:
+        return []
+    x, y, f, p = first
+    return [f"MISMATCH png x={x} y={y}: file {f} != png {p} ({count} of {pw * ph} pixels differ)"]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aseprite_oracle", description=__doc__.splitlines()[0])
     parser.add_argument("file")
     parser.add_argument("--sidecar", default=None)
+    parser.add_argument("--png", default=None)
     args = parser.parse_args(argv)
     try:
         with open(args.file, "rb") as fh:
@@ -441,6 +601,9 @@ def main(argv: list[str] | None = None) -> int:
             with open(args.sidecar, encoding="utf-8") as fh:
                 sidecar = json.load(fh)
             mismatches = compare_with_sidecar(ase, sidecar)
+        if args.png is not None:
+            with open(args.png, "rb") as fh:
+                mismatches = [*mismatches, *compare_with_png(ase, fh.read())]
     except (AseFormatError, OSError) as exc:
         print(f"aseprite_oracle: error: {exc}", file=sys.stderr)
         return 1
@@ -451,10 +614,11 @@ def main(argv: list[str] | None = None) -> int:
         for line in mismatches:
             print(line)
         return 1
+    suffix = f"; png {args.png} matches ({ase.width * ase.height} pixels)" if args.png else ""
     print(
         f"OK {args.file}: {ase.width}x{ase.height} depth {ase.color_depth}, "
         f"{len(ase.frames)} frame(s), transparent_index {ase.transparent_index}, "
-        f"{len(ase.palette)} palette entries"
+        f"{len(ase.palette)} palette entries{suffix}"
     )
     return 0
 
