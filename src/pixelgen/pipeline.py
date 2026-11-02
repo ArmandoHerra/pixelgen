@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -106,6 +107,21 @@ def _check_writable_dir(path: Path, label: str) -> None:
         raise PixelgenError(f"cannot write {label} '{path}': not writable{where}")
 
 
+def _refuse_directory_targets(output: Path, scale: int, *, aseprite: bool) -> None:
+    """Refuse, before any spend, an output-set target that is a real directory (PXG-33).
+
+    Uses ``lstat`` so a symlink to a directory is not refused (``os.replace`` swaps the link
+    for the new file). Writes nothing.
+    """
+    for path in output_paths(output, scale, aseprite=aseprite):
+        try:
+            mode = os.lstat(path).st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISDIR(mode):
+            raise PixelgenError(f"cannot write output '{path}': it is a directory")
+
+
 def preflight_generate(
     prompt: str,
     output: Path | None,
@@ -125,6 +141,7 @@ def preflight_generate(
     else:
         resolved = output
         _check_writable_dir(output.absolute().parent, "output")
+    _refuse_directory_targets(resolved, scale, aseprite=aseprite)
     _check_writable_dir(pixelgen_home(), "pixelgen home")
     return resolved
 
@@ -313,10 +330,11 @@ def next_version_base(source_path: Path) -> Path:
     return directory / f"{base}-v{max(input_n, highest) + 1}"
 
 
-def preflight_refine(source: RefineSource) -> Path:
+def preflight_refine(source: RefineSource, *, aseprite: bool = False) -> Path:
     """Filesystem checks before the first paid call; writes nothing. Returns the -vN base."""
     base = next_version_base(source.path)
     _check_writable_dir(base.parent, "output")
+    _refuse_directory_targets(base, source.sidecar.outputs.scale, aseprite=aseprite)
     _check_writable_dir(pixelgen_home(), "pixelgen home")
     return base
 

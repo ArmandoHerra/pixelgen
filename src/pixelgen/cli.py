@@ -401,7 +401,7 @@ def refine(
     if aseprite:
         with usage_phase():
             pipeline.check_aseprite_palette(source.sidecar.spec.palette)
-    pipeline.preflight_refine(source)
+    pipeline.preflight_refine(source, aseprite=aseprite)
 
     _require_api_key()
     llm = make_llm()
