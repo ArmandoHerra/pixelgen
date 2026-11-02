@@ -11,6 +11,8 @@ PXG-35; stops before outline and background).
 
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
 
 from pixelgen.errors import SpecError
@@ -19,6 +21,7 @@ from pixelgen.spec import ArtSpec
 TRANSPARENT = (0, 0, 0, 0)
 BLOCK_BIN_BITS = 4  # block_downscale votes on 16 levels per channel (4096 bins)
 ALPHA_THRESHOLD = 128  # alpha < 128 is transparent, >= 128 is opaque
+KEY_TOLERANCE = 24  # key_background: per-channel (Chebyshev) distance from a backdrop corner
 BAYER_4X4 = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.int64)
 BAYER_SPREAD = 64  # offset = ((M + 0.5) / 16 - 0.5) * BAYER_SPREAD == 4 * M - 30
 
@@ -152,6 +155,98 @@ def block_downscale(img: np.ndarray, w: int, h: int) -> np.ndarray:
     block[solid, 3] = 255
     grid = block.reshape(nby, nbx, 4)
     return _out(grid[rows[:, None], cols[None, :]])
+
+
+# --------------------------------------------------------------------------- key background
+
+
+def _key_references(img: np.ndarray, tolerance: int) -> list[np.ndarray]:
+    """Corner colours that act as backdrop references (D1 step 3: 2-of-4 agreement)."""
+    h, w = img.shape[:2]
+    corners = [
+        img[y, x].astype(np.int16) for y, x in ((0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1))
+    ]
+    refs = []
+    for i, c in enumerate(corners):
+        if c[3] != 255:
+            continue
+        for j, other in enumerate(corners):
+            if j != i and other[3] == 255 and int(np.abs(other[:3] - c[:3]).max()) <= tolerance:
+                refs.append(c[:3])
+                break
+    return refs
+
+
+def _runs(cand: np.ndarray) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Per row, the ``[start, end)`` column runs of True pixels."""
+    h, w = cand.shape
+    padded = np.zeros((h, w + 2), dtype=np.int8)
+    padded[:, 1:-1] = cand
+    edges = np.diff(padded, axis=1)
+    starts, ends = [], []
+    for y in range(h):
+        row = edges[y]
+        starts.append(np.flatnonzero(row == 1))
+        ends.append(np.flatnonzero(row == -1))
+    return starts, ends
+
+
+def _border_region(cand: np.ndarray) -> np.ndarray:
+    """Candidates 4-connected to the image border, by an iterative row-run fill (D2)."""
+    h, w = cand.shape
+    starts, ends = _runs(cand)
+    seen = [np.zeros(len(s), dtype=bool) for s in starts]
+    queue: deque[tuple[int, int]] = deque()
+
+    def visit(y: int, k: int) -> None:
+        if not seen[y][k]:
+            seen[y][k] = True
+            queue.append((y, k))
+
+    for y in range(h):
+        for k in range(len(starts[y])):
+            if y in (0, h - 1) or starts[y][k] == 0 or ends[y][k] == w:
+                visit(y, k)
+    while queue:
+        y, k = queue.popleft()
+        a, b = int(starts[y][k]), int(ends[y][k])
+        for ny in (y - 1, y + 1):
+            if 0 <= ny < h:
+                lo = int(np.searchsorted(ends[ny], a, side="right"))
+                hi = int(np.searchsorted(starts[ny], b, side="left"))
+                for nk in range(lo, hi):
+                    visit(ny, nk)
+    region = np.zeros((h, w), dtype=bool)
+    for y in range(h):
+        for k in np.flatnonzero(seen[y]):
+            region[y, starts[y][k] : ends[y][k]] = True
+    return region
+
+
+def key_background(img: np.ndarray, *, tolerance: int = KEY_TOLERANCE) -> np.ndarray:
+    """Make the border-connected backdrop of an RGBA image transparent (PXG-38).
+
+    Backdrop colours come from the corners (a corner counts when another opaque corner is
+    within ``tolerance``). Opaque pixels within ``tolerance`` (Chebyshev, RGB) of a
+    reference that are 4-connected to the image border become ``(0, 0, 0, 0)``; every
+    other pixel is kept. Returns a new array, so the input is never mutated.
+    """
+    _check_rgba(img)
+    if isinstance(tolerance, bool) or not isinstance(tolerance, (int, np.integer)):
+        raise ValueError(f"tolerance must be an int in 0..255, got {tolerance!r}")
+    if not 0 <= tolerance <= 255:
+        raise ValueError(f"tolerance must be in 0..255, got {tolerance}")
+    out = np.ascontiguousarray(img.copy())
+    refs = _key_references(img, int(tolerance))
+    if not refs:
+        return out
+    rgb = img[..., :3].astype(np.int16)
+    near = np.zeros(img.shape[:2], dtype=bool)
+    for ref in refs:
+        near |= np.abs(rgb - ref).max(axis=2) <= tolerance
+    cand = near & (img[..., 3] == 255)
+    out[_border_region(cand)] = TRANSPARENT
+    return out
 
 
 # --------------------------------------------------------------------------- quantize
@@ -374,6 +469,7 @@ def pixelate_raster(img: np.ndarray, spec: ArtSpec, palette: np.ndarray) -> np.n
     _check_palette(palette)
     img = _with_alpha(img)
     _check_rgba(img)
-    # PXG-38: key_background(img) is called here (before block_downscale and quantize).
+    if spec.background == "transparent" and int(img[..., 3].min()) == 255:
+        img = key_background(img)  # PXG-38: at source resolution, before downscale/quantize
     out = block_downscale(img, spec.width, spec.height)
     return _index_steps(out, spec, palette, cleanup=None)
