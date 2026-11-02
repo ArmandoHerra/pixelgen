@@ -33,9 +33,11 @@ FROZEN_NO_KEY = {
     "transparent-alpha254": _NO_KEY_HASH,
     "solid-alpha254": _NO_KEY_HASH,
 }
+# sha256 of each function's source lines at $BASE (interpreter-independent: ast.dump differs
+# between CPython versions, source text does not).
 FROZEN_AST = {
-    "pixelate": "6b7ca6f1a341f1f9d5b1c7082afa80afc4e51727a84516df111e8097a51f7c67",
-    "apply_background": "4ca787896a28e4ceac5fe3fac2ce54df51def307a0f62055a48b0840e940dbda",
+    "pixelate": "a5d4dd961810e492a55036e591146f175bba280a83f7c033f3750efad8592164",
+    "apply_background": "9c5bf0eab892ee77dcd5e37a2d96ba921a5958985299d0862162bc1d50afe001",
 }
 
 
@@ -298,10 +300,11 @@ def test_llm_grid_never_keys(monkeypatch, tmp_path):
 
 
 def test_pixelate_function_ast_frozen():
-    tree = ast.parse(Path(px.__file__).read_text(encoding="utf-8"))
+    source = Path(px.__file__).read_text(encoding="utf-8")
+    lines = source.splitlines()
     got = {
-        n.name: hashlib.sha256(ast.dump(n).encode()).hexdigest()
-        for n in tree.body
+        n.name: hashlib.sha256("\n".join(lines[n.lineno - 1 : n.end_lineno]).encode()).hexdigest()
+        for n in ast.parse(source).body
         if isinstance(n, ast.FunctionDef) and n.name in FROZEN_AST
     }
     assert got == FROZEN_AST
