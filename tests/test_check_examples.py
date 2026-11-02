@@ -725,6 +725,33 @@ DEEP = 100_000
 SHALLOW = 500
 
 
+STACK_BYTES = 8 * 1024 * 1024
+
+
+def _pin_stack():
+    """Child-side: fix the soft stack limit so 3.14's C-stack-bound JSON parser overflows the
+    same way on every host (CI runners have a bigger stack than a laptop's 8 MiB)."""
+    try:
+        import resource
+    except ImportError:  # pragma: no cover - platforms without ``resource``
+        return
+    _, hard = resource.getrlimit(resource.RLIMIT_STACK)
+    want = STACK_BYTES if hard == resource.RLIM_INFINITY else min(STACK_BYTES, hard)
+    resource.setrlimit(resource.RLIMIT_STACK, (want, hard))
+
+
+def run_checker_pinned_stack(*args) -> subprocess.CompletedProcess:
+    kw = {"preexec_fn": _pin_stack} if sys.platform != "win32" else {}
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *map(str, args)],
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+        timeout=120,
+        **kw,
+    )
+
+
 def _deep_array(n: int) -> str:
     return "[" * n + "]" * n
 
@@ -738,7 +765,7 @@ def test_deeply_nested_run_json_is_one_fail_line(shape, root):
     slug_dir = make_example(root)
     text = _deep_array(DEEP) if shape == "array" else _deep_object(DEEP)
     (slug_dir / "run.json").write_text(text, encoding="utf-8")
-    proc = run_checker(root)
+    proc = run_checker_pinned_stack(root)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert proc.stderr == ""
     assert "Traceback" not in proc.stdout + proc.stderr
@@ -749,7 +776,7 @@ def test_deeply_nested_run_json_is_one_fail_line(shape, root):
 def test_deeply_nested_sidecar_is_one_fail_line(root):
     slug_dir = make_example(root)
     (slug_dir / f"{SLUG}.json").write_text(_deep_array(DEEP), encoding="utf-8")
-    proc = run_checker(root)
+    proc = run_checker_pinned_stack(root)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert proc.stderr == ""
     assert "Traceback" not in proc.stdout + proc.stderr
