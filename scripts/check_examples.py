@@ -343,6 +343,8 @@ def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
 def _load_record(path: Path, rel: str) -> tuple[dict[str, Any] | None, list[Problem]]:
     try:
         record = json.loads(path.read_text(encoding="utf-8"))
+    except RecursionError:
+        return None, [Problem(rel, "run.json nests too deeply to parse")]
     except (OSError, ValueError):
         return None, [Problem(rel, "run.json missing or not valid JSON")]
     if not isinstance(record, dict):

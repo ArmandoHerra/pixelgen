@@ -717,3 +717,57 @@ def test_key_in_root_path_keeps_summary_usable(tmp_path):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert proc.stdout.splitlines()[-1] == f"FAIL {tmp_path}/[redacted]/examples: 1 problem(s)"
     assert "FAKEFAKE" not in proc.stdout + proc.stderr
+
+
+# --------------------------------------------------------------------------- PXG-36
+
+DEEP = 100_000
+SHALLOW = 500
+
+
+def _deep_array(n: int) -> str:
+    return "[" * n + "]" * n
+
+
+def _deep_object(n: int) -> str:
+    return '{"a":' * n + "0" + "}" * n
+
+
+@pytest.mark.parametrize("shape", ["array", "object"])
+def test_deeply_nested_run_json_is_one_fail_line(shape, root):
+    slug_dir = make_example(root)
+    text = _deep_array(DEEP) if shape == "array" else _deep_object(DEEP)
+    (slug_dir / "run.json").write_text(text, encoding="utf-8")
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+    assert "Traceback" not in proc.stdout + proc.stderr
+    assert _detail_lines(proc) == [f"FAIL {SLUG}/run.json: run.json nests too deeply to parse"]
+    assert proc.stdout.splitlines()[-1] == f"FAIL {root}: 1 problem(s)"
+
+
+def test_deeply_nested_sidecar_is_one_fail_line(root):
+    slug_dir = make_example(root)
+    (slug_dir / f"{SLUG}.json").write_text(_deep_array(DEEP), encoding="utf-8")
+    proc = run_checker(root)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+    assert "Traceback" not in proc.stdout + proc.stderr
+    lines = _detail_lines(proc)
+    assert len(lines) == 1
+    assert lines[0].startswith(f"FAIL {SLUG}/{SLUG}.json: sidecar rejected by load_sidecar:")
+
+
+def test_parseable_nesting_in_run_json_is_accepted(root):
+    nested: list = []
+    for _ in range(SHALLOW):
+        nested = [nested]
+    record = copy.deepcopy(RECORD)
+    record["extra"] = nested
+    make_example(root, record=record)
+    proc = run_checker(root)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("OK ")
+    assert "key-material hits 0" in lines[0]
