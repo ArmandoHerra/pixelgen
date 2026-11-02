@@ -1,17 +1,17 @@
 # Aseprite verification run (PXG-30, research §12)
 run_format: 1
-date: 2026-10-30T22:23:53Z
-operator: orchestrator (OR-20)
+date: 2026-11-02T00:38:51Z
+operator: Armando Herra (GUI Q4); orchestrator (OR-20) batch re-run
 aseprite_version: Aseprite 1.3.18.6-dev
 os: Linux-7.0.0-38-generic-x86_64-with-glibc2.39
 python: 3.14.7
 pixelgen_version: 0.1.0
-pixelgen_commit: eecb0bbedd8cd6da8d5dde562dfc72ef0b7c48e3
+pixelgen_commit: 44215a3798165e8e62eabb9dea03d5f1b9cc9325
 display: DISPLAY=unset WAYLAND_DISPLAY=unset
-q4_profile_prompt: OWED
+q4_profile_prompt: no
 cases: pico8-16x16-index0, gameboy-8x8-border, nes-128x128-hashed, endesga32-17x33, grayscale4-16x16-solid
 result: PASS
-note: 
+note: Q4 answered 2026-11-01 from the operator opening pico8-16x16-index0/ours.aseprite in the Aseprite 1.3.18.6-dev GUI: no colour-profile prompt. Every ours.aseprite carries the same sRGB colour-profile chunk (0x2007 type 1).
 ## Commands
 $ $PIXELGEN_ASEPRITE --version
 $ $PIXELGEN_ASEPRITE -b pico8-16x16-index0/ours.aseprite --save-as pico8-16x16-index0/aseprite-export.png
