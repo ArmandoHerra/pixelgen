@@ -22,11 +22,17 @@ from pixelgen.spec import ArtSpec
 
 runner = CliRunner()
 
-DEEP = 100_000
-# Python 3.14 bounds JSON/recursion by the real C stack, so the depth at which
-# ``json.loads`` overflows follows the host stack limit. Pin it: in-process runs
-# use a thread with this stack, child processes get this RLIMIT_STACK.
+# Python 3.14 bounds JSON recursion by the real C stack, so the depth at which
+# ``json.loads`` overflows follows the stack size; 3.11-3.13 use a counter (3.11 about
+# 1,000 levels, 3.12/3.13 about 10,000) and need a stack big enough to reach it, or they
+# segfault (a 1 MiB thread crashed 3.12 and 3.13). Pin one roomy stack: in-process runs
+# use a thread with this stack, the child process gets it as RLIMIT_STACK.
 STACK_BYTES = 8 * 1024 * 1024
+# 1,000,000 levels would need under 8.4 bytes of stack per level to fit in 8 MiB, which
+# no build manages (the CI 3.14 build fitted 100,000 levels, so under 84 bytes per level).
+# The margin claim is only what the module run on 3.11-3.14 shows.
+DEEP = 1_000_000
+THREAD_STACK_BYTES = STACK_BYTES
 SHAPES = ("array", "object")
 PRODUCT_REASONS = (
     "nests too deeply to parse",
@@ -44,8 +50,8 @@ _KEY_VARS = (
 )
 
 
-def run_on_fixed_stack(fn):
-    """Run ``fn()`` in a thread whose stack is STACK_BYTES, whatever the host ulimit."""
+def run_on_fixed_stack(fn, stack=THREAD_STACK_BYTES):
+    """Run ``fn()`` in a thread whose stack is ``stack`` bytes, whatever the host ulimit."""
     box: dict = {}
 
     def target():
@@ -54,7 +60,7 @@ def run_on_fixed_stack(fn):
         except BaseException as exc:  # re-raised in the caller
             box["error"] = exc
 
-    previous = threading.stack_size(STACK_BYTES)
+    previous = threading.stack_size(stack)
     try:
         thread = threading.Thread(target=target)
         thread.start()
@@ -137,7 +143,7 @@ class Harness:
         )
         return result.export.sidecar_path
 
-    def refine(self, from_=None):
+    def refine(self, from_=None, stack=THREAD_STACK_BYTES):
         self.llm = FakeLLM()
         self.mp.setenv("ANTHROPIC_API_KEY", "dummy-key")
 
@@ -149,7 +155,7 @@ class Harness:
         args = ["refine", "x"]
         if from_ is not None:
             args += ["--from", str(from_)]
-        return run_on_fixed_stack(lambda: runner.invoke(app, args))
+        return run_on_fixed_stack(lambda: runner.invoke(app, args), stack)
 
     def assert_no_spend(self):
         assert self.make_llm_calls == 0
@@ -192,7 +198,7 @@ def test_last_json_deep_json_is_one_error_line(h, shape):
     h.assert_no_spend()
 
 
-@pytest.mark.parametrize("depth", [500, 990, 1100, 5000, 100_000])
+@pytest.mark.parametrize("depth", [500, 990, 1100, 5000, DEEP])
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("source", ["from", "last"])
 def test_depth_sweep_is_one_line(h, source, shape, depth):
@@ -219,7 +225,10 @@ def test_deep_schema_version_is_one_bounded_line(h, source, depth):
         )
     path, from_arg = _source(h, source, text)
     before = _digest(path)
-    result = h.refine(from_=from_arg)
+    # Not an overflow test: the roomy 8 MiB stack lets these inputs parse so that
+    # _check_version (D2) is what bounds the line. On a build where a cell still cannot
+    # parse, D1 turns it into "nests too deeply"; that cell then proves only D1.
+    result = h.refine(from_=from_arg, stack=STACK_BYTES)
     line = assert_clean_failure(result, 2 if source == "from" else 1, str(path))
     assert "unsupported" in line or "nests too deeply" in line, line[:300]
     assert len(line) < len(str(path)) + 200
