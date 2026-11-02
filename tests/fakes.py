@@ -20,9 +20,12 @@ from typing import Any
 
 import numpy as np
 
+from pixelgen import providers
+from pixelgen.backends import base
 from pixelgen.backends.base import GenerationResult, GenerationUsage, Generator
-from pixelgen.errors import LLMOutputError
+from pixelgen.errors import BackendUnavailableError, LLMOutputError
 from pixelgen.llm import DEFAULT_MAX_TOKENS, LLMResult, Usage, extract_json
+from pixelgen.providers import ProviderConfig
 
 _DEFAULT_USAGE = Usage(10, 20)
 
@@ -126,3 +129,114 @@ class FakeRasterGenerator(Generator):
 
     def refine(self, previous_spec, previous_grid, palette, instruction):
         raise AssertionError("FakeRasterGenerator.refine must never be called (X-PXG-97)")
+
+
+# --- provider seam fakes (PXG-37) ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TransportCall:
+    url: str
+    headers: dict
+    body: dict
+    timeout: float
+
+
+class FakeTransport:
+    """Scriptable ``Transport``: dict -> deep copy returned, exception -> raised,
+    callable -> called with the ``TransportCall``. An exhausted script is an AssertionError."""
+
+    def __init__(self, *script: Any):
+        self.calls: list[TransportCall] = []
+        self._script: list[Any] = list(script)
+
+    def queue(self, *items: Any) -> FakeTransport:
+        self._script.extend(items)
+        return self
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+    def post_json(self, url: str, *, headers: Any, body: Any, timeout: float) -> dict:
+        call = TransportCall(url, copy.deepcopy(dict(headers)), copy.deepcopy(dict(body)), timeout)
+        self.calls.append(call)
+        n = len(self.calls)
+        if n > len(self._script):
+            raise AssertionError(f"FakeTransport: no scripted response for call #{n}")
+        return self._resolve(self._script[n - 1], call)
+
+    def _resolve(self, item: Any, call: TransportCall) -> dict:
+        if isinstance(item, BaseException):
+            raise item
+        if callable(item) and not isinstance(item, dict):
+            return self._resolve(item(call), call)
+        if isinstance(item, dict):
+            return copy.deepcopy(item)
+        raise AssertionError(f"FakeTransport: unsupported script item {type(item).__name__}")
+
+
+FAKE_PROVIDER = ProviderConfig(
+    "fake-image",
+    "FAKEIMG_TEST_KEY",
+    "fake-image-1",
+    "FAKEIMG_TEST_MODEL",
+    "https://fake-image.invalid/v1",
+    "images",
+)
+
+
+def fake_image_reply(w: int, h: int, seed: int = 0) -> dict:
+    rng = np.random.default_rng(seed)
+    rgb = rng.integers(0, 256, size=(h, w, 3), dtype=np.uint8)
+    return {"width": w, "height": h, "rgb": rgb.tolist()}
+
+
+class FakeImageGenerator(Generator):
+    """Test-only image provider backend: one ``transport.post_json`` per generate."""
+
+    def __init__(self, llm: Any = None, transport: Any = None, provider: Any = None):
+        self.llm = llm
+        self.transport = transport
+        self.provider = provider
+
+    def generate(self, spec: Any, palette: np.ndarray) -> GenerationResult:
+        key = providers.resolve_key(self.provider)
+        model = providers.resolve_model(self.provider)
+        reply = self.transport.post_json(
+            f"{self.provider.base_url}/images",
+            headers={"Authorization": f"Bearer {key}"},
+            body={
+                "model": model,
+                "prompt": spec.subject,
+                "width": spec.width,
+                "height": spec.height,
+            },
+            timeout=providers.DEFAULT_TIMEOUT_SECONDS,
+        )
+        w, h = int(reply["width"]), int(reply["height"])
+        image = np.asarray(reply["rgb"], dtype=np.uint8).reshape(h, w, 3)
+        return GenerationResult(image=image, generated_size=(w, h), usage=GenerationUsage(calls=1))
+
+    def refine(self, previous_spec, previous_grid, palette, instruction):
+        raise AssertionError("FakeImageGenerator.refine must never be called (X-PXG-97)")
+
+
+class FakeUnavailableGenerator(Generator):
+    def __init__(self, llm: Any = None, **_: Any):
+        raise BackendUnavailableError("the 'fake-down' backend is not available in this test")
+
+    def generate(self, spec, palette):  # pragma: no cover - unreachable
+        raise AssertionError
+
+    def refine(self, previous_spec, previous_grid, palette, instruction):  # pragma: no cover
+        raise AssertionError
+
+
+def register_fake_provider(
+    monkeypatch: Any,
+    name: str = "fake-image",
+    target: str = "fakes:FakeImageGenerator",
+    provider: ProviderConfig = FAKE_PROVIDER,
+) -> None:
+    monkeypatch.setitem(base._REGISTRY, name, base.BackendEntry(target, provider, transport=True))

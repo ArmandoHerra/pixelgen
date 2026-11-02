@@ -16,8 +16,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from pixelgen import __version__, palettes, pipeline, presets
-from pixelgen.backends.base import available_backends
+from pixelgen import __version__, palettes, pipeline, presets, providers
+from pixelgen.backends.base import available_backends, uses_transport
 from pixelgen.errors import MissingAPIKeyError, PixelgenError, SpecError
 from pixelgen.llm import AnthropicLLM
 from pixelgen.spec import SIZE_MAX, SIZE_MIN, ArtSpec
@@ -34,6 +34,8 @@ R = TypeVar("R")
 
 # The LLM seam: tests monkeypatch ``pixelgen.cli.make_llm``.
 make_llm = AnthropicLLM.from_env
+# The transport seam: tests monkeypatch ``pixelgen.cli.make_transport``.
+make_transport: Callable[[], providers.Transport] = providers.UrllibTransport
 
 
 def _collapse(text: str) -> str:
@@ -181,9 +183,16 @@ def error_boundary(func: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
-def _require_api_key() -> None:
-    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        raise MissingAPIKeyError()
+def _require_api_keys(backend: str) -> None:
+    """Every key the backend needs (spec LLM first), checked before any client exists."""
+    for var in providers.required_keys(backend):
+        if not os.environ.get(var, "").strip():
+            raise MissingAPIKeyError(providers.missing_key_message(var, backend))
+        if not providers.is_header_safe_key(os.environ[var].strip()):
+            raise MissingAPIKeyError(
+                f"{var} contains a character that is not printable ASCII. "
+                "Export it again without one."
+            )
 
 
 def print_summary(result: pipeline.PipelineResult) -> None:
@@ -355,9 +364,10 @@ def generate(
     pipeline.ensure_backend_available(backend)
     resolved_output = pipeline.preflight_generate(prompt, output, scale, aseprite=aseprite)
 
-    _require_api_key()
+    _require_api_keys(backend)
     llm = make_llm()
-    generator = pipeline.get_generator(backend, llm)
+    transport = make_transport() if uses_transport(backend) else None
+    generator = pipeline.get_generator(backend, llm, transport=transport)
     result = pipeline.run_generate(
         prompt,
         llm=llm,
@@ -403,7 +413,7 @@ def refine(
             pipeline.check_aseprite_palette(source.sidecar.spec.palette)
     pipeline.preflight_refine(source, aseprite=aseprite)
 
-    _require_api_key()
+    _require_api_keys(pipeline.REFINE_BACKEND)
     llm = make_llm()
     outcome = pipeline.run_refine(source, instruction, llm=llm, aseprite=aseprite)
     print_summary(outcome.result)

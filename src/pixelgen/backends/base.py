@@ -9,10 +9,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from pixelgen import providers
 from pixelgen.errors import BackendUnavailableError
+from pixelgen.providers import ProviderConfig
 
 if TYPE_CHECKING:
     from pixelgen.llm import LLMClient
+    from pixelgen.providers import Transport
     from pixelgen.spec import ArtSpec
 
 MAX_GENERATION_SIDE = 32
@@ -106,9 +109,25 @@ def resample_nearest(grid: list[list[int]], out_w: int, out_h: int) -> list[list
     ]
 
 
-_REGISTRY: dict[str, str] = {
-    "llm-grid": "pixelgen.backends.llm_grid:LLMGridGenerator",
-    "diffusion": "pixelgen.backends.diffusion:DiffusionGenerator",
+@dataclass(frozen=True)
+class BackendEntry:
+    """A registered backend: its ``module:Class`` target, its provider, and whether its
+    generator takes a transport (PXG-37)."""
+
+    target: str
+    provider: ProviderConfig
+    transport: bool = False
+
+
+# A bare ``"module:Class"`` string is still accepted as a registry value (a keyless,
+# transport-less entry), so tests that register a fake by string keep working.
+_KEYLESS = ProviderConfig("unconfigured", None, None, None, None, "images")
+
+_REGISTRY: dict[str, BackendEntry] = {
+    "llm-grid": BackendEntry("pixelgen.backends.llm_grid:LLMGridGenerator", providers.ANTHROPIC),
+    "diffusion": BackendEntry(
+        "pixelgen.backends.diffusion:DiffusionGenerator", providers.DIFFUSION_STUB
+    ),
 }
 
 
@@ -116,14 +135,35 @@ def available_backends() -> list[str]:
     return sorted(_REGISTRY)
 
 
+def _unknown(name: str) -> BackendUnavailableError:
+    return BackendUnavailableError(
+        f"unknown backend '{name}'; available: {', '.join(available_backends())}"
+    )
+
+
+def _entry(name: str) -> BackendEntry:
+    if name not in _REGISTRY:
+        raise _unknown(name)
+    value: BackendEntry | str = _REGISTRY[name]
+    return BackendEntry(value, _KEYLESS) if isinstance(value, str) else value
+
+
+def provider_for(name: str) -> ProviderConfig:
+    return _entry(name).provider
+
+
+def uses_transport(name: str) -> bool:
+    return _entry(name).transport
+
+
 def _resolve(name: str) -> type[Generator]:
-    module_name, _, class_name = _REGISTRY[name].partition(":")
+    module_name, _, class_name = _entry(name).target.partition(":")
     return getattr(importlib.import_module(module_name), class_name)
 
 
-def create_generator(name: str, *, llm: LLMClient) -> Generator:
-    if name not in _REGISTRY:
-        raise BackendUnavailableError(
-            f"unknown backend '{name}'; available: {', '.join(available_backends())}"
-        )
-    return _resolve(name)(llm=llm)
+def create_generator(name: str, *, llm: LLMClient, transport: Transport | None = None) -> Generator:
+    entry = _entry(name)
+    cls = _resolve(name)
+    if entry.transport:
+        return cls(llm=llm, transport=transport, provider=entry.provider)  # type: ignore[call-arg]
+    return cls(llm=llm)

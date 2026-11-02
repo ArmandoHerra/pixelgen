@@ -51,6 +51,7 @@ SLUG_MAX = 48
 FALLBACK_SLUG = "pixelgen"
 MAX_COLLISION_INDEX = 9999
 DEFAULT_OUT_DIR = Path("out")
+REFINE_BACKEND = "llm-grid"  # refine stays on llm-grid whatever produced the source (X-PXG-97)
 
 
 @dataclass(frozen=True)
@@ -197,8 +198,8 @@ def build_spec(
     return spec, inferred
 
 
-def get_generator(name: str, llm: Any) -> Generator:
-    return create_generator(name, llm=llm)
+def get_generator(name: str, llm: Any, *, transport: Any = None) -> Generator:
+    return create_generator(name, llm=llm, transport=transport)
 
 
 def to_token_usage(*usages: Any) -> TokenUsage:
@@ -403,7 +404,7 @@ def run_refine(
 ) -> RefineOutcome:
     previous = source.sidecar
     palette = load_palette(previous.spec.palette)
-    generator = create_generator("llm-grid", llm=llm)
+    generator = create_generator(REFINE_BACKEND, llm=llm)
     refined = generator.refine(previous.spec, previous.grid, palette, instruction)  # type: ignore[attr-defined]
     spec = ArtSpec.model_validate({**refined.spec.model_dump(), "preset": previous.spec.preset})
     ignored = tuple(refined.locked_overrides)
@@ -417,7 +418,7 @@ def run_refine(
         output=base,
         scale=previous.outputs.scale,
         overwrite=False,
-        backend="llm-grid",
+        backend=REFINE_BACKEND,
         model=getattr(llm, "model", None),
         token_usage=to_token_usage(refined.usage),
         aseprite=aseprite,
