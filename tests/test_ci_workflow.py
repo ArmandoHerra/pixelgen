@@ -57,10 +57,10 @@ def test_ci_runs_on_ubuntu_latest_only():
         assert job["runs-on"] == "ubuntu-latest", name
 
 
-def test_ci_test_job_installs_dev_extra_and_runs_pytest():
+def test_ci_test_job_installs_from_lock_and_runs_pytest():
     text = _run_text(_load()["jobs"]["test"])
-    assert 'pip install -e ".[dev]"' in text
-    assert "python -m pytest" in text
+    assert "uv sync --locked" in text
+    assert "uv run --no-sync python -m pytest" in text
 
 
 def test_install_smoke_is_non_editable_and_runs_cli():
@@ -124,29 +124,14 @@ def test_ci_job_set_is_exactly_test_install_smoke_lint():
     assert set(_load()["jobs"]) == {"test", "install-smoke", "lint"}
 
 
-def test_ci_lint_job_runs_ruff_from_pip_dev_install():
+def test_ci_lint_job_runs_ruff_from_locked_install():
     text = _run_text(_load()["jobs"]["lint"])
-    needles = ('pip install -e ".[dev]"', "ruff check .", "ruff format --check .")
+    needles = ("uv sync --locked", "ruff check .", "ruff format --check .")
     positions = []
     for needle in needles:
         assert needle in text, f"{needle!r} not in lint run text"
         positions.append(text.index(needle))
     assert positions == sorted(positions), "lint commands out of order"
-
-
-def test_ci_installs_no_uv():
-    wf = _load()
-    setup_uv = [
-        s["uses"]
-        for job in wf["jobs"].values()
-        for s in job.get("steps", [])
-        if "setup-uv" in str(s.get("uses", ""))
-    ]
-    assert not setup_uv, f"setup-uv used: {setup_uv}"
-    offenders = [name for name, job in wf["jobs"].items() if re.search(r"\buv\b", _run_text(job))]
-    assert not offenders, f"uv in run text of jobs: {offenders}: " + "; ".join(
-        _run_text(wf["jobs"][n]) for n in offenders
-    )
 
 
 def test_ci_lint_job_cannot_pass_on_violation():
@@ -161,7 +146,7 @@ def test_ci_lint_job_cannot_pass_on_violation():
     for step in ruff_steps:
         run = step["run"].strip()
         assert "\n" not in run, f"ruff command must be a whole step: {run!r}"
-        assert run.startswith("python -m ruff "), run
+        assert run.startswith("uv run --no-sync python -m ruff "), run
         for bad in forbidden:
             assert bad not in run, f"{bad!r} in {run!r}"
         assert "continue-on-error" not in step

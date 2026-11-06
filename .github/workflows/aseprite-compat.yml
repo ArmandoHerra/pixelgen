@@ -22,22 +22,32 @@ jobs:
       LS_SHA256: fd90bddda8135fe00f4a9a9c8c9ebd48f9b07e8782ab269be5c9efb1a851af30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          persist-credentials: false
+      - id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.11"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          version: "0.13.6"
+          checksum: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
+          enable-cache: false
       - name: Install pixelgen
-        run: python -m pip install .
+        run: uv sync --locked --no-dev --no-editable
+        env:
+          UV_PYTHON: ${{ steps.setup-python.outputs.python-path }}
       - name: Fetch and verify LibreSprite
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/libresprite.AppImage" "$LS_URL"
           echo "$LS_SHA256  $RUNNER_TEMP/libresprite.AppImage" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/libresprite.AppImage"
       - name: Write cases with the shipped writer
-        run: python .github/scripts/aseprite_compat.py make "$RUNNER_TEMP/cases"
+        run: uv run --no-sync python .github/scripts/aseprite_compat.py make "$RUNNER_TEMP/cases"
       - name: Render each case with LibreSprite (batch)
         run: |
           for f in "$RUNNER_TEMP"/cases/*.aseprite; do
             APPIMAGE_EXTRACT_AND_RUN=1 "$RUNNER_TEMP/libresprite.AppImage" -b "$f" --save-as "${f%.aseprite}.libresprite.png"
           done
       - name: Compare (alpha-0 rule)
-        run: python .github/scripts/aseprite_compat.py compare "$RUNNER_TEMP/cases"
+        run: uv run --no-sync python .github/scripts/aseprite_compat.py compare "$RUNNER_TEMP/cases"
