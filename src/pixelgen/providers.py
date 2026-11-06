@@ -33,7 +33,12 @@ INITIAL_BACKOFF_SECONDS = 0.5
 MAX_BACKOFF_SECONDS = 8.0
 DEFAULT_TIMEOUT_SECONDS = 120.0
 RETRYABLE_STATUS = frozenset({408, 409, 429})
+# Largest accepted reply body: 16 MiB. PXG-42's worst realistic reply (one 1024x1024 PNG,
+# base64, JSON-escaped) is about 5.7 MB, and a 16-bit RGBA one about 11.4 MB.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+MALFORMED_URL_PROBLEM = "refusing to send a request: the provider URL is malformed"
+BASE_URL_PROBLEM = "base_url must be a well-formed https URL (http only to localhost)"
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 _ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -42,12 +47,19 @@ _ALIAS_KEY_RE = re.compile(r"^PIXELGEN_.*_API_KEY$")
 
 def _scheme_problem(url: str) -> str | None:
     """None when ``url`` may be requested; else the refusal message (names no path/query)."""
-    parts = urlsplit(url)
+    malformed = False
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+    except ValueError:
+        malformed = True  # urlsplit's text can echo the URL; it is never kept
+    if malformed:  # returned outside the handler: no __context__ carries the text
+        return MALFORMED_URL_PROBLEM
     scheme = parts.scheme.lower()
-    host = parts.hostname or "the provider"
+    host = hostname or "the provider"
     if scheme == "https":
         return None
-    if scheme == "http" and parts.hostname in LOOPBACK_HOSTS:
+    if scheme == "http" and hostname in LOOPBACK_HOSTS:
         return None
     return f"refusing to send a request to {host} over {scheme}: use https (http only to localhost)"
 
@@ -72,7 +84,7 @@ class ProviderConfig:
         if self.usage_units not in USAGE_UNITS:
             raise ValueError(f"usage_units must be one of {USAGE_UNITS}")
         if self.base_url is not None and _scheme_problem(self.base_url) is not None:
-            raise ValueError("base_url must be https (http only to localhost)")
+            raise ValueError(BASE_URL_PROBLEM)
 
 
 # Duplicates pixelgen.llm on purpose so this module never imports ``anthropic``.
@@ -147,8 +159,11 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def build_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirectHandler())
+def build_opener(*, env_proxies: bool = True) -> urllib.request.OpenerDirector:
+    """``env_proxies=False`` installs an empty ProxyHandler, so no env proxy is consulted."""
+    if env_proxies:
+        return urllib.request.build_opener(_NoRedirectHandler())
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
 
 
 def _is_timeout(exc: BaseException) -> bool:
@@ -177,6 +192,13 @@ class UrllibTransport:
         if problem is not None:
             raise TransportError(problem)
         host = urlsplit(url).hostname or "the provider"
+        opener = self._opener
+        if opener is None:
+            # http is only ever loopback here: a proxy would get the bearer header in cleartext.
+            if urlsplit(url).scheme.lower() == "https":
+                opener = build_opener()
+            else:
+                opener = build_opener(env_proxies=False)
         req = None
         try:
             req = urllib.request.Request(
@@ -199,8 +221,8 @@ class UrllibTransport:
             failure: str
             fatal: str | None = None
             try:
-                with (self._opener or build_opener()).open(req, timeout=timeout) as resp:
-                    raw = resp.read()
+                with opener.open(req, timeout=timeout) as resp:
+                    raw = resp.read(MAX_RESPONSE_BYTES + 1)
                 break
             except urllib.error.HTTPError as exc:
                 code = exc.code
@@ -236,6 +258,9 @@ class UrllibTransport:
             delay = min(INITIAL_BACKOFF_SECONDS * 2 ** (attempt - 1), MAX_BACKOFF_SECONDS)
             log.debug("retrying in %.1fs", delay)
             self._sleep(delay)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            limit_mib = MAX_RESPONSE_BYTES // (1024 * 1024)
+            raise TransportError(f"the response from {host} was larger than {limit_mib} MiB")
         data: Any = None
         decoded = False
         try:

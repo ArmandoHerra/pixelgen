@@ -53,8 +53,8 @@ class _Resp:
     def __init__(self, raw):
         self._raw = raw
 
-    def read(self):
-        return self._raw
+    def read(self, amt=None):
+        return self._raw if amt is None else self._raw[:amt]
 
     def __enter__(self):
         return self

@@ -164,6 +164,7 @@ app = _NoColorTyper(
     no_args_is_help=True,
     add_completion=False,
     cls=PixelgenGroup,
+    pretty_exceptions_show_locals=False,
 )
 
 
