@@ -284,7 +284,7 @@ def test_flag_off_bytes_frozen(tmp_path, stem):
 
 
 def test_examples_replay_through_oracle(tmp_path):
-    paths = sorted(p for p in EXAMPLES.glob("*/*.json") if p.name != "run.json")
+    paths = [next(EXAMPLES.glob(f"*/{stem}.json")) for stem in sorted(PINNED)]
     assert len(paths) == 4
     for committed_path in paths:
         slug = committed_path.parent.name

@@ -2,8 +2,12 @@
 """Offline checker for ``examples/`` (PXG-14): palette-only PNGs, exact previews, run records.
 
 Usage: ``python scripts/check_examples.py [ROOT=examples] [--require-runs N]``.
-Exit 0 ok/skip, 1 problems, 2 usage error. Never imports anthropic, pixelgen.llm or pixelgen.cli,
-and never echoes matched key material.
+Exit 0 ok/skip, 1 problems, 2 usage error. Never imports anthropic, pixelgen.llm, pixelgen.cli,
+pixelgen.providers, pixelgen.backends or any network module, and never echoes matched key material.
+
+Run records come in two versions. Version 1 (PXG-14) prices one ``usage`` dict. Version 2 (PXG-44)
+prices each provider's sidecar ``usage`` records on a line of its own and, for a comparison pair,
+checks that the two members share their prompt and flags.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ import json
 import math
 import os
 import re
+import shlex
 import struct
 import sys
 import zlib
@@ -27,11 +32,15 @@ from pixelgen.export import Sidecar, load_sidecar
 from pixelgen.palettes import load_palette
 
 SKIP_LINE = "SKIP examples/ absent: live samples are operator-gated (PXG-14, OR-03)"
-KEY_MARKER = b"sk-ant-"
-KEY_TEXT = KEY_MARKER.decode("ascii")
-KEY_PATTERN = re.compile(re.escape(KEY_TEXT) + r"\S*")
+KEY_MARKERS = (b"sk-ant-", b"sk-or-")
+KEY_TEXTS = tuple(m.decode("ascii") for m in KEY_MARKERS)
+KEY_PATTERN = re.compile("(?:" + "|".join(re.escape(t) for t in KEY_TEXTS) + r")\S*")
+BANNED_COMMAND_TEXTS = ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", *KEY_TEXTS)
 REDACTED = "[redacted]"
-RECORD_VERSION = 1
+RECORD_VERSIONS = (1, 2)
+VERSION_REASON = "run_record_version must be 1 or 2"
+ARMS = ("llm-grid", "openrouter")
+EPS = 1e-9
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_TEXT_BYTES = 4 * 1024 * 1024  # decompression bound for PNG text chunks
 
@@ -42,6 +51,22 @@ class Problem:
     reason: str
 
 
+@dataclass(frozen=True)
+class PairMember:
+    """What the pair rules need from one v2 slug (collected while the slug is checked)."""
+
+    slug: str
+    pair: str
+    backend: Any
+    prompt: Any
+    size: tuple[int, int] | None
+    palette: str | None
+    flags: tuple[str, ...] | None
+    out: str | None
+    backend_flag: str | None
+    sidecar_backend: str | None
+
+
 @dataclass
 class Stats:
     runs: int = 0
@@ -50,6 +75,8 @@ class Stats:
     key_hits: int = 0
     billed_runs: int = 0
     slugs: list[str] = field(default_factory=list)
+    prices: list[tuple[str, float]] = field(default_factory=list)
+    members: list[PairMember] = field(default_factory=list)
 
 
 def _redact(text: str) -> str:
@@ -57,16 +84,25 @@ def _redact(text: str) -> str:
     return KEY_PATTERN.sub(REDACTED, text)
 
 
+def _has_key(text: str) -> bool:
+    return any(t in text for t in KEY_TEXTS)
+
+
+def _has_key_bytes(data: bytes) -> bool:
+    return any(m in data for m in KEY_MARKERS)
+
+
 def _redact_path(rel: str) -> str:
     """Per path segment, replace key text through that segment's end (keeps the path usable)."""
     return "/".join(
-        seg[: seg.index(KEY_TEXT)] + REDACTED if KEY_TEXT in seg else seg for seg in rel.split("/")
+        seg[: min(seg.index(t) for t in KEY_TEXTS if t in seg)] + REDACTED if _has_key(seg) else seg
+        for seg in rel.split("/")
     )
 
 
 def _scrub(text: str, generic: str) -> str:
     """Swap any text that carries key material for a generic reason."""
-    return generic if KEY_TEXT in text else text
+    return generic if _has_key(text) else text
 
 
 def _is_number(value: Any) -> bool:
@@ -99,7 +135,7 @@ def _sidecar_problems(sidecar_path: Path, rel: str) -> tuple[Sidecar | None, lis
     try:
         shipped = [_hex(row)[1:] for row in load_palette(name)]
     except Exception as exc:
-        if KEY_TEXT in f"{name}{exc}":
+        if _has_key(f"{name}{exc}"):
             return sidecar, [Problem(rel, "unknown shipped palette (name not echoed)")]
         return sidecar, [Problem(rel, f"unknown shipped palette {name!r}: {exc}")]
     if list(sidecar.palette.colors) != shipped:
@@ -161,14 +197,8 @@ def _preview_problems(
 # --------------------------------------------------------------------------- run record
 
 
-def _record_problems(step: Any, index: int, sidecar: Sidecar | None, rel: str) -> list[Problem]:
-    label = f"step {index + 1}"
-
-    def bad(reason: str) -> Problem:
-        return Problem(rel, f"{label}: {reason}")
-
-    if not isinstance(step, dict):
-        return [bad("must be an object")]
+def _step_basics(step: dict[str, Any], index: int, bad: Any) -> list[Problem]:
+    """Rules shared by both record versions: kind, command and prompt."""
     problems: list[Problem] = []
     kind = step.get("kind")
     if kind not in ("generate", "refine"):
@@ -180,12 +210,24 @@ def _record_problems(step: Any, index: int, sidecar: Sidecar | None, rel: str) -
     prompt = step.get("prompt")
     if not isinstance(command, str) or not command.startswith("pixelgen "):
         problems.append(bad("command must start with 'pixelgen '"))
-    elif "ANTHROPIC_API_KEY" in command or "sk-ant-" in command:
+    elif any(text in command for text in BANNED_COMMAND_TEXTS):
         problems.append(bad("command contains key material or an API key variable"))
     if not isinstance(prompt, str) or not prompt.strip():
         problems.append(bad("prompt missing or empty"))
     elif kind == "generate" and isinstance(command, str) and prompt not in command:
         problems.append(bad("command does not contain the prompt verbatim"))
+    return problems
+
+
+def _record_problems(step: Any, index: int, sidecar: Sidecar | None, rel: str) -> list[Problem]:
+    label = f"step {index + 1}"
+
+    def bad(reason: str) -> Problem:
+        return Problem(rel, f"{label}: {reason}")
+
+    if not isinstance(step, dict):
+        return [bad("must be an object")]
+    problems = _step_basics(step, index, bad)
 
     if sidecar is not None:
         if step.get("model") != sidecar.model:
@@ -230,6 +272,290 @@ def _cost_problems(step: dict[str, Any], bad: Any) -> list[Problem]:
         problems.append(bad(f"cost_usd {cost} != formula {expected}"))
     if cost > cap:
         problems.append(bad(f"cost_usd {cost} exceeds cap_usd {cap}"))
+    return problems
+
+
+# --------------------------------------------------------------------------- run record v2
+
+
+def _close(a: float, b: float) -> bool:
+    return abs(a - b) <= EPS
+
+
+def _tokens_line_problems(line: dict[str, Any], sidecar: Sidecar, recs: list[Any], bad: Any):
+    problems: list[Problem] = []
+    tokens_in, tokens_out = line.get("input_tokens"), line.get("output_tokens")
+    counted = (
+        _is_number(tokens_in)
+        and _is_number(tokens_out)
+        and tokens_in == sidecar.token_usage.input_tokens
+        and tokens_out == sidecar.token_usage.output_tokens
+        and tokens_in + tokens_out == sum(r.quantity for r in recs)
+    )
+    if not counted:
+        problems.append(bad("tokens line differs from sidecar token counts"))
+    prices = line.get("prices_usd_per_mtok")
+    price_in = prices.get("input_tokens") if isinstance(prices, dict) else None
+    price_out = prices.get("output_tokens") if isinstance(prices, dict) else None
+    if not (_is_number(price_in) and _is_number(price_out)):
+        problems.append(bad("tokens line needs input_tokens and output_tokens prices"))
+    elif _is_number(tokens_in) and _is_number(tokens_out) and _is_number(line.get("cost_usd")):
+        raw = (float(tokens_in) * float(price_in) + float(tokens_out) * float(price_out)) / 1e6
+        if not math.isfinite(raw) or not _close(line["cost_usd"], round(raw, 6)):
+            problems.append(bad("tokens line cost_usd off formula"))
+    if line.get("cost_source") != "sidecar-tokens-x-price":
+        problems.append(bad("tokens line cost_source must be sidecar-tokens-x-price"))
+    return problems
+
+
+def _images_line_problems(
+    line: dict[str, Any], recs: list[Any], bad: Any, slug_prices: list[float]
+) -> list[Problem]:
+    problems: list[Problem] = []
+    n = sum(r.calls for r in recs)
+    before = line.get("key_usage_before_usd")
+    after = line.get("key_usage_after_usd")
+    price = line.get("price_per_image_usd")
+    fee = line.get("credit_fee_pct")
+    if not all(_is_number(v) for v in (before, after, price, fee)):
+        return [bad("images line needs numeric key usage readings, price and fee")]
+    slug_prices.append(float(price))
+    measured = round(after - before, 6)
+    expected = round(n * price, 6)
+    if not (_is_number(line.get("calls")) and line["calls"] == n):
+        problems.append(bad("images line calls differ from usage records"))
+    if after < before:
+        problems.append(bad("key_usage_after_usd below key_usage_before_usd"))
+    if not (_is_number(line.get("metered_usd")) and _close(line["metered_usd"], measured)):
+        problems.append(bad("metered_usd differs from the key usage delta"))
+    if not (_is_number(line.get("expected_usd")) and _close(line["expected_usd"], expected)):
+        problems.append(bad("expected_usd differs from calls x price_per_image_usd"))
+    word = "match" if abs(measured - expected) <= 0.5 * price else "mismatch"
+    if line.get("cross_check") != word:
+        problems.append(bad("cross_check differs from the recomputation"))
+    if _is_number(line.get("cost_usd")):
+        want = round(measured * (1 + fee / 100), 6)
+        if not _close(line["cost_usd"], want):
+            problems.append(bad("images line cost_usd off fee formula"))
+    if line.get("cost_source") != "openrouter-key-usage":
+        problems.append(bad("images line cost_source must be openrouter-key-usage"))
+    return problems
+
+
+def _line_problems(
+    lines: list[dict[str, Any]], sidecar: Sidecar, usage: list[Any], bad: Any, slug_prices: list
+) -> list[Problem]:
+    """Rules (5)-(7): one cost line per provider, each priced from its own usage records."""
+    problems: list[Problem] = []
+    providers = list(dict.fromkeys(r.provider for r in usage))
+    token_providers = {r.provider for r in usage if r.unit == "tokens"}
+    if len(token_providers) > 1:
+        problems.append(bad("token records from more than one provider cannot be split"))
+    if [line.get("provider") for line in lines] != providers:
+        problems.append(bad("one cost line per provider"))
+        return problems
+    for line, provider in zip(lines, providers, strict=True):
+        recs = [r for r in usage if r.provider == provider]
+        units = list(dict.fromkeys(r.unit for r in recs))
+        if line.get("steps") != [r.step for r in recs] or [line.get("unit")] != units:
+            problems.append(bad("cost line steps differ from usage records"))
+        if len(units) != 1:
+            continue
+        if units[0] == "tokens":
+            if len(token_providers) == 1:
+                problems.extend(_tokens_line_problems(line, sidecar, recs, bad))
+        elif units[0] == "images":
+            problems.extend(_images_line_problems(line, recs, bad, slug_prices))
+        else:
+            problems.append(bad(f"no pricing rule for unit {units[0]}"))
+    return problems
+
+
+def _record_problems_v2(
+    step: Any, index: int, sidecar: Sidecar | None, rel: str, slug_prices: list[float]
+) -> list[Problem]:
+    label = f"step {index + 1}"
+
+    def bad(reason: str) -> Problem:
+        return Problem(rel, f"{label}: {reason}")
+
+    if not isinstance(step, dict):
+        return [bad("must be an object")]
+    problems = _step_basics(step, index, bad)
+    if "usage" in step:
+        problems.append(bad("v2 step must not carry a whole-run usage figure"))
+    if step.get("approval") not in ("calibration", "spend"):
+        problems.append(bad("approval must be calibration or spend"))
+
+    raw_lines = step.get("costs")
+    lines_ok = (
+        isinstance(raw_lines, list)
+        and bool(raw_lines)
+        and all(isinstance(x, dict) for x in raw_lines)
+    )
+    if not lines_ok:
+        problems.append(bad("costs must be a non-empty list of objects"))
+
+    if sidecar is not None:
+        if sidecar.schema_version != 2:
+            problems.append(bad("run record v2 needs a v2 sidecar"))
+            sidecar = None
+    if sidecar is not None:
+        for key, have in (
+            ("backend", sidecar.backend),
+            ("model", sidecar.model),
+            ("provider", sidecar.provider),
+            ("provider_model", sidecar.provider_model),
+        ):
+            if step.get(key) != have:
+                problems.append(bad(f"{key} differs from sidecar"))
+        usage = list(sidecar.usage or [])
+        if step.get("usage_records") != [r.model_dump(mode="json") for r in usage]:
+            problems.append(bad("usage_records differ from sidecar usage"))
+        if lines_ok:
+            problems.extend(_line_problems(raw_lines, sidecar, usage, bad, slug_prices))
+
+    cost, worst, cap = step.get("cost_usd"), step.get("worst_usd"), step.get("cap_usd")
+    if not all(_is_number(v) for v in (cost, worst, cap)):
+        problems.append(bad("cost_usd, worst_usd and cap_usd must be numbers"))
+        return problems
+    if lines_ok:
+        if not all(_is_number(x.get("cost_usd")) for x in raw_lines):
+            problems.append(bad("cost line cost_usd must be a number"))
+        elif not _close(cost, round(math.fsum(x["cost_usd"] for x in raw_lines), 6)):
+            problems.append(bad("step cost_usd differs from the sum of its lines"))
+    if cost > cap:
+        problems.append(bad("cost_usd above cap_usd"))
+    if worst > cap:
+        problems.append(bad("cap_usd below worst_usd"))
+    return problems
+
+
+def _v2_billed(step: Any) -> bool:
+    """A v2 generate step is billed when every tokens line has output tokens and every images
+    line was metered."""
+    lines = step.get("costs") if isinstance(step, dict) else None
+    if not isinstance(lines, list) or not lines or not all(isinstance(x, dict) for x in lines):
+        return False
+    for line in lines:
+        if line.get("unit") == "tokens":
+            out = line.get("output_tokens")
+            if not (_is_number(out) and out > 0):
+                return False
+        elif line.get("unit") == "images":
+            metered = line.get("metered_usd")
+            if not (_is_number(metered) and metered > 0):
+                return False
+        else:
+            return False
+    return True
+
+
+# --------------------------------------------------------------------------- pairs
+
+_OPTION_FLAGS = ("-o", "--backend", "--size", "--palette")
+
+
+def _command_parts(command: Any, prompt: Any) -> tuple[tuple[str, ...] | None, dict[str, str]]:
+    """The command's flags (prompt and the -o/--backend/--size/--palette pairs removed) and the
+    values of those four options."""
+    if not isinstance(command, str):
+        return None, {}
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None, {}
+    flags: list[str] = []
+    values: dict[str, str] = {}
+    dropped_prompt = False
+    pos = 0
+    while pos < len(argv):
+        token = argv[pos]
+        pos += 1
+        if token in _OPTION_FLAGS:
+            if pos < len(argv):
+                values.setdefault(token, argv[pos])
+                pos += 1
+            continue
+        name, eq, value = token.partition("=")
+        if eq and name in _OPTION_FLAGS and name != "-o":
+            values.setdefault(name, value)
+            continue
+        if not dropped_prompt and token == prompt:
+            dropped_prompt = True
+            continue
+        flags.append(token)
+    return tuple(flags), values
+
+
+def _member_of(
+    slug: str, record: dict[str, Any], step: dict[str, Any], sidecar: Sidecar | None
+) -> PairMember:
+    flags, values = _command_parts(step.get("command"), step.get("prompt"))
+    return PairMember(
+        slug=slug,
+        pair=record["pair"],
+        backend=step.get("backend"),
+        prompt=step.get("prompt"),
+        size=(sidecar.spec.width, sidecar.spec.height) if sidecar is not None else None,
+        palette=sidecar.palette.name if sidecar is not None else None,
+        flags=flags,
+        out=values.get("-o"),
+        backend_flag=values.get("--backend"),
+        sidecar_backend=sidecar.backend if sidecar is not None else None,
+    )
+
+
+def _pair_problems(members: list[PairMember]) -> list[Problem]:
+    problems: list[Problem] = []
+    groups: dict[str, list[PairMember]] = {}
+    for member in members:
+        groups.setdefault(member.pair, []).append(member)
+    for pair, group in sorted(groups.items()):
+        group.sort(key=lambda m: m.slug)
+        for member in group:
+            rel = f"{member.slug}/run.json"
+            if member.out != f"examples/{member.slug}/{member.slug}.png":
+                problems.append(
+                    Problem(
+                        rel, f"{member.slug} -o is not examples/{member.slug}/{member.slug}.png"
+                    )
+                )
+            if member.sidecar_backend is not None and member.backend_flag != member.sidecar_backend:
+                problems.append(
+                    Problem(rel, f"{member.slug} --backend differs from sidecar backend")
+                )
+        wanted = {f"{pair}-{arm}": arm for arm in ARMS}
+        complete = (
+            len(group) == 2
+            and {m.slug for m in group} == set(wanted)
+            and all(wanted[m.slug] == m.backend for m in group)
+        )
+        if not complete:
+            problems.append(
+                Problem(
+                    f"{group[-1].slug}/run.json",
+                    f"pair {pair} needs exactly one llm-grid and one openrouter slug",
+                )
+            )
+            continue
+        first, second = (next(m for m in group if m.slug == name) for name in wanted)
+        differing = []
+        if first.prompt != second.prompt:
+            differing.append("prompt")
+        if first.size != second.size and None not in (first.size, second.size):
+            differing.append("size")
+        if first.palette != second.palette and None not in (first.palette, second.palette):
+            differing.append("palette")
+        if first.flags != second.flags:
+            differing.append("flags")
+        if differing:
+            problems.append(
+                Problem(
+                    f"{second.slug}/run.json",
+                    f"pair {first.slug}/{second.slug} differs in {','.join(differing)}",
+                )
+            )
     return problems
 
 
@@ -300,7 +626,7 @@ def _decoded_json_hit(data: bytes) -> bool:
         obj = json.loads(data)
     except (ValueError, RecursionError):
         return False
-    return any(KEY_TEXT in s for s in _json_strings(obj))
+    return any(_has_key(s) for s in _json_strings(obj))
 
 
 def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
@@ -308,14 +634,14 @@ def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
         for dname in dirnames:
-            if KEY_TEXT in dname:
+            if _has_key(dname):
                 drel = (Path(dirpath) / dname).relative_to(root).as_posix() + "/"
                 stats.key_hits += 1
                 problems.append(Problem(drel, "key-like material in name"))
         for name in sorted(filenames):
             path = Path(dirpath) / name
             rel = path.relative_to(root).as_posix()
-            if KEY_TEXT in name:
+            if _has_key(name):
                 stats.key_hits += 1
                 problems.append(Problem(rel, "key-like material in name"))
             try:
@@ -323,12 +649,12 @@ def _key_material_problems(root: Path, stats: Stats) -> list[Problem]:
             except OSError:
                 problems.append(Problem(rel, "cannot read file"))
                 continue
-            hit = KEY_MARKER in data
+            hit = _has_key_bytes(data)
             if data.startswith(PNG_SIGNATURE):
                 texts, failures = _png_text_chunks(data)
                 for reason in sorted(set(failures)):
                     problems.append(Problem(rel, reason))
-                hit = hit or any(KEY_MARKER in t for t in texts)
+                hit = hit or any(_has_key_bytes(t) for t in texts)
             else:
                 hit = hit or _decoded_json_hit(data)
             if hit:
@@ -350,8 +676,8 @@ def _load_record(path: Path, rel: str) -> tuple[dict[str, Any] | None, list[Prob
     if not isinstance(record, dict):
         return None, [Problem(rel, "run.json must be a JSON object")]
     problems: list[Problem] = []
-    if record.get("run_record_version") != RECORD_VERSION:
-        problems.append(Problem(rel, f"run_record_version must be {RECORD_VERSION}"))
+    if record.get("run_record_version") not in RECORD_VERSIONS:
+        problems.append(Problem(rel, VERSION_REASON))
     steps = record.get("steps")
     if not isinstance(steps, list) or not steps:
         problems.append(Problem(rel, "steps must be a non-empty list"))
@@ -377,6 +703,8 @@ def _check_slug(slug_dir: Path, root: Path, stats: Stats) -> list[Problem]:
     names_ok = True
     load_failed = False
     if record is not None:
+        version = record.get("run_record_version")
+        slug_prices: list[float] = []
         if record.get("slug") != slug:
             problems.append(Problem(record_rel, "slug differs from directory name"))
         for index, step in enumerate(record["steps"]):
@@ -397,16 +725,38 @@ def _check_slug(slug_dir: Path, root: Path, stats: Stats) -> list[Problem]:
                 else:
                     expected.update((sidecar.outputs.png, sidecar.outputs.preview))
                     problems.extend(_image_problems(slug_dir, slug, sidecar, stats))
-            problems.extend(_record_problems(step, index, sidecar, record_rel))
+            if version == 1:
+                problems.extend(_record_problems(step, index, sidecar, record_rel))
+            elif version == 2:
+                problems.extend(_record_problems_v2(step, index, sidecar, record_rel, slug_prices))
+            if (
+                version != 1
+                and index == 0
+                and isinstance(step, dict)
+                and isinstance(record.get("pair"), str)
+            ):
+                # an unknown version already has its own problem; its pair stays complete
+                stats.members.append(_member_of(slug, record, step, sidecar))
         first = record["steps"][0]
-        usage = first.get("usage") if isinstance(first, dict) else None
-        if (
-            isinstance(first, dict)
-            and first.get("kind") == "generate"
-            and isinstance(usage, dict)
-            and _is_number(usage.get("output_tokens"))
-            and usage["output_tokens"] > 0
-        ):
+        if version == 2 and slug_prices:
+            stats.prices.append((slug, slug_prices[0]))
+        if version == 1:
+            usage = first.get("usage") if isinstance(first, dict) else None
+            billed = (
+                isinstance(first, dict)
+                and first.get("kind") == "generate"
+                and isinstance(usage, dict)
+                and _is_number(usage.get("output_tokens"))
+                and usage["output_tokens"] > 0
+            )
+        else:
+            billed = (
+                version == 2
+                and isinstance(first, dict)
+                and first.get("kind") == "generate"
+                and _v2_billed(first)
+            )
+        if billed:
             stats.billed_runs += 1
     if record is not None and names_ok:
         # A sidecar that failed to load hides its outputs; derive the likely names from the slug.
@@ -460,6 +810,12 @@ def check_tree(root: Path, require_runs: int = 0, stats: Stats | None = None) ->
             problems.extend(_check_slug(entry, root, stats))
         elif entry.name != "README.md":
             problems.append(Problem(entry.name, "unexpected file at examples root"))
+    problems.extend(_pair_problems(stats.members))
+    for slug, price in stats.prices[1:]:
+        if not _close(price, stats.prices[0][1]):
+            problems.append(
+                Problem(f"{slug}/run.json", "price_per_image_usd differs across the tree")
+            )
     problems.extend(_key_material_problems(root, stats))
     if require_runs > 0:
         if stats.billed_runs < require_runs:
