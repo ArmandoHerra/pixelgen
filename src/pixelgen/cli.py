@@ -1,6 +1,7 @@
 """Command-line entry point. Later specs add verbs with ``@app.command()``."""
 
 import functools
+import json
 import os
 import re
 import sys
@@ -19,6 +20,7 @@ from rich.text import Text
 from pixelgen import __version__, palettes, pipeline, presets, providers
 from pixelgen.backends.base import available_backends, uses_transport
 from pixelgen.errors import MissingAPIKeyError, PixelgenError, SpecError
+from pixelgen.export import load_sidecar
 from pixelgen.llm import AnthropicLLM
 from pixelgen.spec import SIZE_MAX, SIZE_MIN, ArtSpec
 
@@ -205,6 +207,21 @@ def print_summary(result: pipeline.PipelineResult) -> None:
     )
 
 
+USAGE_PREFIX = "pixelgen: usage: "
+
+
+def usage_line(records: list[dict[str, Any]]) -> str:
+    """One ASCII-only JSON line projecting a sidecar's ``usage`` list (no figure of its own)."""
+    return USAGE_PREFIX + json.dumps(records, ensure_ascii=True, separators=(", ", ": "))
+
+
+def print_usage(sidecar_path: Path) -> None:
+    """Read the sidecar this run wrote back and echo its ``usage`` to stderr, uncoloured."""
+    sidecar = load_sidecar(sidecar_path)
+    records = json.loads(sidecar.model_dump_json())["usage"]
+    typer.echo(usage_line(records), err=True)
+
+
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"pixelgen {__version__}")
@@ -382,6 +399,7 @@ def generate(
         aseprite=aseprite,
     )
     print_summary(result)
+    print_usage(result.export.sidecar_path)
 
 
 @app.command("refine", cls=PixelgenCommand)
@@ -423,3 +441,4 @@ def refine(
             "that requested change was ignored",
             err=True,
         )
+    print_usage(outcome.result.export.sidecar_path)
