@@ -4,6 +4,20 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 
 ## [Unreleased]
 
+### Cycle 4 — cheaper base images, seam first
+
+- PXG-32 — the test harness refuses every outbound socket connection and name lookup, child Python processes included, and fails a keyed child that skips the guard; vendor key variables are cleared for tests.
+- PXG-33 — `generate` and `refine` refuse an output target that is an existing directory with one `cannot write output` line, before the key check and before any paid call.
+- PXG-34 — the test oracle gains `--png`: it compares a `.aseprite` file with its sibling PNG pixel for pixel and names the first differing pixel.
+- PXG-35 — a raster base image is pixelated into a palette-exact sprite (a majority vote per block, then the usual quantize, dither and outline steps); `llm-grid` output is unchanged.
+- PXG-36 — the examples checker reports a deeply nested `run.json` as one `FAIL` line instead of a traceback.
+- PXG-37 — the provider seam: a per-provider config, a standard-library transport with bounded retries, and a fake transport for tests. Every key a backend needs is checked before any spend, and a key that is not printable ASCII is refused without echoing it. No provider ships yet.
+- PXG-38 — a raster base image with an opaque backdrop is keyed to transparency before pixelation when the background is transparent.
+- PXG-39 — sidecars are written as `schema_version` 2 with `provider`, `provider_model`, a per-step `usage` list and `dropped_fields`; `token_usage` stays; version 1 sidecars and `last.json` still load.
+- PXG-40 — after a successful `generate` or `refine`, one `pixelgen: usage:` line on stderr lists the per-step usage; it shows no money figure and no colour.
+- PXG-41 — the README documents the usage line, sidecar v2 and the missing-key message; this cycle-4 changelog section.
+- Compatibility — pixelgen from cycles 1–3 rejects a `schema_version` 2 sidecar ("this pixelgen reads 1"), and so rejects `last.json` too; cycle 4 reads versions 1 and 2.
+
 ### Cycle 3 — Aseprite export
 
 - PXG-25 — an option given no value (`--size`, `-o`, `--from`) or a flag given one (`--show-spec=1`, `--version=1`) now carries the same `(see 'pixelgen <verb> --help')` hint as every other parse error.

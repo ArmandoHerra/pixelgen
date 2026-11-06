@@ -4,24 +4,32 @@ Runs in-process through ``typer.testing.CliRunner`` under the conftest guard; it
 a real LLM client (the model is the scripted ``FakeLLM`` behind the ``make_llm`` seam).
 """
 
+import hashlib
 import importlib.resources
+import json
 import re
 import shlex
+import socket
+import sys
+import typing
 from pathlib import Path
 
 import pytest
 import typer.main
 import yaml
-from fakes import FakeLLM
+from fakes import FakeLLM, FakeTransport, register_fake_provider
 from typer.testing import CliRunner
 
+import pixelgen.backends.base as backends_base
 import pixelgen.backends.llm_grid as llm_grid
 import pixelgen.cli as cli
 import pixelgen.config as config
+import pixelgen.export as export
 import pixelgen.llm as llm
 import pixelgen.palettes as palettes
 import pixelgen.presets as presets
 from pixelgen.cli import app
+from pixelgen.providers import ProviderConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 README = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -190,6 +198,7 @@ ORDER = [
     "Quick start",
     "Examples",
     "Commands",
+    "Output files",
     "Configuration",
     "Palettes and presets",
     "Sizes above 32",
@@ -494,6 +503,13 @@ SCENARIOS = {
         "script": [{}, _BAD_GRID, _BAD_GRID, _BAD_GRID],
         "token": "after 3 attempts",
     },
+    "Malformed key": {
+        "argv": ["generate", "a red apple"],
+        "key": True,
+        "key_value": "sk-ant-bad\u2019key",
+        "script": [],
+        "token": "not printable ASCII",
+    },
     "Diffusion backend": {
         "argv": ["generate", "a red apple", "--backend", "diffusion"],
         "key": True,
@@ -551,7 +567,7 @@ def test_error_table_quotes_real_messages(label, monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "make_llm", make)
     if scenario["key"]:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", scenario.get("key_value", "sk-ant-dummy"))
     else:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     result = runner.invoke(app, scenario["argv"])
@@ -559,8 +575,10 @@ def test_error_table_quotes_real_messages(label, monkeypatch, tmp_path):
         output = result.output + result.stderr
     except ValueError:  # runner without a separate stderr stream
         output = result.output
-    if not scenario["key"]:
-        assert not calls, "make_llm must not run without a key"
+    if not scenario["key"] or "key_value" in scenario:
+        assert not calls, "make_llm must not run without a usable key"
+    if "key_value" in scenario:
+        assert scenario["key_value"] not in output, "the key value must never be printed"
     assert "Traceback" not in output
     assert result.exit_code != 0
     assert int(exit_cell) == result.exit_code, f"{label}: README says {exit_cell}"
@@ -622,3 +640,181 @@ def test_readme_intro_matches_the_repository_description():
     intro = _intro()
     for claim in ("natural-language prompt", "true pixel art", "exact grid size", "exact palette"):
         assert claim in intro, f"README intro lost the product claim {claim!r}"
+
+
+# --- PXG-41: the seam waves ----------------------------------------------------------------------
+
+_USAGE_USAGE = llm.Usage(input_tokens=120, output_tokens=340)
+
+
+def _seam_grid(side: int) -> list[list[int]]:
+    return _grid(side, 16)
+
+
+def _run_usage_scenario(monkeypatch, tmp_path):
+    """One generate, then one refine of the sidecar it wrote: (generate, refine, sidecar path)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "pxhome"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    fake = FakeLLM(
+        {},
+        {"grid": _seam_grid(16)},
+        {"spec": {}, "grid": _seam_grid(16)},
+        model=llm.DEFAULT_MODEL,
+        usage=_USAGE_USAGE,
+    )
+    monkeypatch.setattr(cli, "make_llm", lambda: fake)
+    generated = runner.invoke(
+        app, ["generate", "a red apple", "--size", "16", "--palette", "pico8", "-o", "out/apple"]
+    )
+    assert generated.exit_code == 0, (generated.stdout, generated.stderr)
+    sidecar = tmp_path / "out" / "apple.json"
+    refined = runner.invoke(app, ["refine", "make it greener", "--from", str(sidecar)])
+    assert refined.exit_code == 0, (refined.stdout, refined.stderr)
+    return generated, refined, sidecar
+
+
+def _usage_lines(stderr: str) -> list[str]:
+    return [ln for ln in stderr.splitlines() if ln.startswith("pixelgen: usage:")]
+
+
+def test_costs_usage_line_matches_generate_and_refine(monkeypatch, tmp_path):
+    generated, refined, _ = _run_usage_scenario(monkeypatch, tmp_path)
+    real = [_usage_lines(generated.stderr), _usage_lines(refined.stderr)]
+    assert [len(r) for r in real] == [1, 1], real
+    match = re.search(
+        r"<!-- readme-test: usage-lines -->\n```text\n(.*?)^```\n<!-- /readme-test -->",
+        _section("Costs"),
+        re.M | re.S,
+    )
+    assert match, "## Costs has no 'usage-lines' marker followed by a text fence"
+    documented = match.group(1).splitlines()
+    assert documented == [real[0][0], real[1][0]]
+    assert "$" not in match.group(1)
+    assert "pixelgen: usage:" in _section("Costs").replace(match.group(0), "")
+
+
+def _output_files_table_fields() -> set[str]:
+    return {_unticked(cells[0]) for cells in _table(_section("Output files"))}
+
+
+def test_output_files_sidecar_fields_match_a_real_run(monkeypatch, tmp_path):
+    _, _, sidecar = _run_usage_scenario(monkeypatch, tmp_path)
+    data = json.loads(sidecar.read_text(encoding="utf-8"))
+    section = _section("Output files")
+    fields = _output_files_table_fields()
+    assert fields == set(export.Sidecar.model_fields)
+    assert set(data) <= fields
+    version = re.search(r"`schema_version: (\d+)`", section)
+    assert version, "## Output files lacks the `schema_version: N` sentence"
+    assert int(version.group(1)) == data["schema_version"] == 2
+    line = next(ln for ln in section.splitlines() if ln.startswith("Each `usage` record has"))
+    sentence, _, steps_part = line.partition(";")
+    keys = set(re.findall(r"`([a-z_]+)`", sentence)) - {"usage"}
+    assert data["usage"], "the real run recorded no usage"
+    for record in data["usage"]:
+        assert set(record) == keys
+    documented_steps = set(re.findall(r"`([a-z_]+)`", steps_part)) - {"step"}
+    permitted = set(typing.get_args(export.UsageRecord.model_fields["step"].annotation))
+    assert documented_steps == permitted == set(export.USAGE_STEPS)
+
+
+def test_v1_sidecar_compatibility_note_holds(monkeypatch, tmp_path):
+    knight = ROOT / "examples" / "knight" / "knight.json"
+    assert json.loads(knight.read_text(encoding="utf-8"))["schema_version"] == 1
+    copy = tmp_path / "knight.json"
+    copy.write_bytes(knight.read_bytes())
+    before = hashlib.sha256(copy.read_bytes()).hexdigest()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "pxhome"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    fake = FakeLLM({"spec": {}, "grid": _seam_grid(32)})
+    monkeypatch.setattr(cli, "make_llm", lambda: fake)
+    result = runner.invoke(app, ["refine", "make the cape blue", "--from", str(copy)])
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+    new = json.loads((tmp_path / "knight-v2.json").read_text(encoding="utf-8"))
+    documented = int(re.search(r"`schema_version: (\d+)`", _section("Output files")).group(1))
+    assert new["schema_version"] == documented
+    assert hashlib.sha256(copy.read_bytes()).hexdigest() == before
+    section = _section("Output files")
+    assert "version 1" in section and "refine --from" in section
+
+
+def test_missing_key_message_names_the_backend_variable(monkeypatch, tmp_path):
+    spans = [s for s in re.findall(r"`([^`\n]+)`", _section("Errors")) if "<VARIABLE>" in s]
+    assert len(spans) == 1, spans
+    template = spans[0]
+    literal = template.replace("<VARIABLE>", "").strip()
+    assert literal and _in_src(literal)
+    exit_cell = int(_error_rows()["No API key"][1])
+    register_fake_provider(
+        monkeypatch,
+        name="example-raster",
+        provider=ProviderConfig(
+            "example-raster", "EXAMPLE_IMAGE_API_KEY", None, None, None, "images"
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PIXELGEN_HOME", str(tmp_path / "pxhome"))
+    monkeypatch.delenv("EXAMPLE_IMAGE_API_KEY", raising=False)
+    llm_calls: list[int] = []
+    transport = FakeTransport()
+    monkeypatch.setattr(cli, "make_llm", lambda: llm_calls.append(1))
+    monkeypatch.setattr(cli, "make_transport", lambda: transport)
+
+    arms = [
+        ("ANTHROPIC_API_KEY", None, ["generate", "a red apple"]),
+        (
+            "EXAMPLE_IMAGE_API_KEY",
+            "sk-ant-README-SENTINEL",
+            ["generate", "a red apple", "--backend", "example-raster"],
+        ),
+    ]
+    for variable, anthropic_key, argv in arms:
+        if anthropic_key is None:
+            monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("ANTHROPIC_API_KEY", anthropic_key)
+        result = runner.invoke(app, argv)
+        assert result.exit_code == exit_cell, (variable, result.stderr)
+        assert template.replace("<VARIABLE>", variable) in result.stderr
+        assert "README-SENTINEL" not in result.stdout + result.stderr
+        assert "Traceback" not in result.stdout + result.stderr
+        assert llm_calls == [] and transport.call_count == 0
+
+
+def test_readme_names_no_unregistered_backend():
+    registered = set(backends_base.available_backends())
+    named = set(re.findall(r"--backend[ =]`?([A-Za-z0-9_-]+)", README))
+    assert named, "README names no --backend value"
+    assert named <= registered, f"README names unregistered backends: {sorted(named - registered)}"
+
+
+def test_development_note_network_guard_holds():
+    development = _section("Development")
+    assert "network" in development and "tests/conftest.py" in development
+    guard = sys.modules["pixelgen_netguard"]
+    probe = socket.socket()
+    try:
+        with pytest.raises(pytest.fail.Exception) as exc:
+            probe.connect(("192.0.2.1", 9))
+    finally:
+        probe.close()
+    assert exc.value.msg.startswith(guard.GUARD_PREFIX)
+
+
+def test_internal_seams_stay_out_of_user_sections():
+    outside = README.replace(_section("Development"), "")
+    found = [
+        name
+        for name in (
+            "FakeTransport",
+            "FakeLLM",
+            "aseprite_oracle",
+            "conftest",
+            "ProviderConfig",
+            "render_result",
+        )
+        if name in outside
+    ]
+    assert not found, f"internal seam names in user sections: {found}"

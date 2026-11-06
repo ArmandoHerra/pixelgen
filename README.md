@@ -33,7 +33,7 @@ export ANTHROPIC_API_KEY=sk-ant-your-key-here
 pixelgen generate "a red apple" --size 16 --palette pico8
 ```
 
-This writes `out/a-red-apple.png` (the exact 16x16 image), `out/a-red-apple@8x.png` (an upscaled preview) and `out/a-red-apple.json` (the sidecar: spec, grid and token usage). It calls the Anthropic API, see [Costs](#costs). Run `pixelgen --version` to see the installed version.
+This writes `out/a-red-apple.png` (the exact 16x16 image), `out/a-red-apple@8x.png` (an upscaled preview) and `out/a-red-apple.json` (the sidecar: spec, grid and usage, see [Output files](#output-files)). It calls the Anthropic API, see [Costs](#costs). Run `pixelgen --version` to see the installed version.
 
 ## Examples
 
@@ -106,6 +106,31 @@ pixelgen presets
 
 Lists the built-in style presets and every setting each one applies. Needs no API key.
 
+## Output files
+
+A run writes the PNG, the `@<scale>x` preview and the sidecar `.json`, plus the `.aseprite` file with `--aseprite`. Sidecars written by this version carry `schema_version: 2`.
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | The sidecar format version. |
+| `pixelgen_version` | The pixelgen version that wrote the file. |
+| `created_at` | When the file was written, as a UTC timestamp. |
+| `spec` | The resolved spec: subject, size, palette, background, outline, dither, view and so on. |
+| `grid` | The palette-index grid that `refine` edits; `-1` is a transparent cell. |
+| `palette` | The palette name and its colours. |
+| `model` | The model that drew the grid. |
+| `backend` | The generator backend that made the run. |
+| `token_usage` | The model's input tokens, output tokens and call count, summed over the run. |
+| `outputs` | The file names of the PNG, the preview and (with `--aseprite`) the `.aseprite` file, and the preview scale. |
+| `provider` | The provider that made the base image, or `null`. |
+| `provider_model` | The model that provider used, or `null`. |
+| `usage` | One record per step of the run: what that step consumed, in its own unit. |
+| `dropped_fields` | The spec fields the model returned that pixelgen did not keep, each with the reason. |
+
+Each `usage` record has `step`, `provider`, `model`, `unit`, `calls` and `quantity`; `step` is one of `infer_spec`, `generate`, `refine`.
+
+pixelgen still reads version 1 sidecars written before cycle 4, so `refine --from` works on them; versions of pixelgen older than cycle 4 reject a version 2 sidecar.
+
 ## Configuration
 
 | Variable | Required | Default | Meaning |
@@ -174,7 +199,16 @@ Sizes above 32: the model is asked for at most 32 px on the longer side (aspect 
 
 ## Costs
 
-`generate` and `refine` each call the Anthropic API and cost money on your account. Failed validation attempts are retried and billed too. `palettes` and `presets` make no API call and need no key.
+`generate` and `refine` each call the Anthropic API and cost money on your account. Failed validation attempts are retried and billed too. On success, `generate` and `refine` print one `pixelgen: usage:` line on stderr that lists, for each step, the calls it made and what it consumed; it shows no money figure.
+
+<!-- readme-test: usage-lines -->
+```text
+pixelgen: usage: [{"step": "infer_spec", "provider": "anthropic", "model": "claude-sonnet-5-5", "unit": "tokens", "calls": 1, "quantity": 460}, {"step": "generate", "provider": "anthropic", "model": "claude-sonnet-5-5", "unit": "tokens", "calls": 1, "quantity": 460}]
+pixelgen: usage: [{"step": "refine", "provider": "anthropic", "model": "claude-sonnet-5-5", "unit": "tokens", "calls": 1, "quantity": 460}]
+```
+<!-- /readme-test -->
+
+The first line is a `generate` run, the second a `refine` run. `palettes` and `presets` make no API call and need no key.
 
 ## Errors
 
@@ -186,8 +220,11 @@ Every failure prints one `pixelgen: error:` line on stderr and no traceback.
 | Unknown palette | `unknown palette` | 2 | Pick a name from `pixelgen palettes`. |
 | Unknown preset | `unknown preset` | 2 | Pick a name from `pixelgen presets`. |
 | Model output stays invalid | `the model returned invalid output after 3 attempts` | 1 | Run it again or simplify the prompt; the attempts were billed. |
+| Malformed key | `contains a character that is not printable ASCII` | 1 | Export the key again without the stray character (for example a smart quote or a control character). |
 | Diffusion backend | `The diffusion backend is not implemented` | 1 | Use the default `--backend llm-grid`. |
 | Nothing to refine | `no previous result` | 1 | Run `generate` first, or pass `--from` a sidecar `.json`. |
+
+When a key is missing, the message names the variable the selected backend needs and never prints its value: `<VARIABLE> is not set`. `refine` needs only `ANTHROPIC_API_KEY`. A key that holds anything but printable ASCII is refused the same way, naming the variable and never the value.
 
 Exit codes: `0` success. `2` means pixelgen refused your input before spending anything: a flag combination, a value out of range, an unknown palette, preset or backend, an empty prompt or instruction, a `--from` file it cannot read, a palette larger than the Aseprite indexed limit (255 entries) with `--aseprite`. `1` covers everything else: a missing API key, an output directory or `PIXELGEN_HOME` that is not a writable directory (checked before the first API call), model or network failures, and the diffusion stub.
 
@@ -213,7 +250,7 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-The tests never call the Anthropic API: a guard in `tests/conftest.py` blocks client construction and requests, and the model is replaced by a scripted fake. CI runs the suite on Python 3.11 to 3.14 without any API secret. The package is built with hatchling. `tests/test_readme.py` checks this README against the CLI and the code.
+The tests never reach the network: a guard in `tests/conftest.py` refuses every outbound connection and Anthropic client construction, and the model and transports are replaced by scripted fakes. CI runs the suite on Python 3.11 to 3.14 without any API secret. The package is built with hatchling. `tests/test_readme.py` checks this README against the CLI and the code.
 
 ## License
 
