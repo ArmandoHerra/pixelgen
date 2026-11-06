@@ -331,7 +331,7 @@ def test_registered_usage_units_known(env, monkeypatch):
     step_annotation = export.UsageRecord.model_fields["step"].annotation
     assert typing.get_args(step_annotation) == export.USAGE_STEPS
     names = base.available_backends()
-    assert names == ["diffusion", "llm-grid"]
+    assert names == ["diffusion", "llm-grid", "openrouter"]
     for name in names:
         assert base.provider_for(name).usage_units in export.USAGE_UNITS
 

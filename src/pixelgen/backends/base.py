@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import importlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -75,6 +76,11 @@ class RefineResult:
 
 
 class Generator(abc.ABC):
+    @classmethod
+    def check_env(cls, environ: Mapping[str, str] | None = None) -> None:
+        """Usage-phase check of backend-specific environment (default: nothing to check)."""
+        return None
+
     @abc.abstractmethod
     def generate(self, spec: ArtSpec, palette: np.ndarray) -> GenerationResult: ...
 
@@ -128,6 +134,9 @@ _REGISTRY: dict[str, BackendEntry] = {
     "diffusion": BackendEntry(
         "pixelgen.backends.diffusion:DiffusionGenerator", providers.DIFFUSION_STUB
     ),
+    "openrouter": BackendEntry(
+        "pixelgen.backends.openrouter:OpenRouterGenerator", providers.OPENROUTER, transport=True
+    ),
 }
 
 
@@ -167,3 +176,8 @@ def create_generator(name: str, *, llm: LLMClient, transport: Transport | None =
     if entry.transport:
         return cls(llm=llm, transport=transport, provider=entry.provider)  # type: ignore[call-arg]
     return cls(llm=llm)
+
+
+def check_backend_env(name: str, environ: Mapping[str, str] | None = None) -> None:
+    """Run the backend's usage-phase environment check (raises a PixelgenError)."""
+    _resolve(name).check_env(environ)

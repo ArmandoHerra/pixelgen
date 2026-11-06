@@ -33,7 +33,7 @@ def test_diffusion_backend_is_unavailable():
 
 def test_registry_lists_and_creates_backends():
     fake = FakeLLM()
-    assert available_backends() == ["diffusion", "llm-grid"]
+    assert available_backends() == ["diffusion", "llm-grid", "openrouter"]
     assert isinstance(create_generator("llm-grid", llm=fake), LLMGridGenerator)
     assert fake.call_count == 0
 
@@ -43,7 +43,7 @@ def test_unknown_backend_lists_available():
         create_generator("dall-e", llm=FakeLLM())
     assert not isinstance(info.value, DiffusionUnavailableError)
     assert "dall-e" in str(info.value)
-    assert "available: diffusion, llm-grid" in str(info.value)
+    assert "available: diffusion, llm-grid, openrouter" in str(info.value)
 
 
 def test_registry_entries_resolve():

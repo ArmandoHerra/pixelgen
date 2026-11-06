@@ -16,6 +16,7 @@ All notable changes are recorded here in the Keep a Changelog format; entries ar
 - PXG-39 — sidecars are written as `schema_version` 2 with `provider`, `provider_model`, a per-step `usage` list and `dropped_fields`; `token_usage` stays; version 1 sidecars and `last.json` still load.
 - PXG-40 — after a successful `generate` or `refine`, one `pixelgen: usage:` line on stderr lists the per-step usage; it shows no money figure and no colour.
 - PXG-41 — the README documents the usage line, sidecar v2 and the missing-key message; this cycle-4 changelog section.
+- PXG-42 — `--backend openrouter`, the first image provider (OpenRouter Images API, `openai/gpt-image-2` by default, `PIXELGEN_OPENROUTER_MODEL` to change it): one low-quality 1024×1024 image per run, cropped and pixelated; `refine` stays on the spec LLM.
 - PXG-45 — the provider transport refuses a malformed URL with one error line that echoes nothing from it, reads at most 16 MiB of a reply, and never sends the localhost http request through `HTTP_PROXY`; the CLI never prints frame locals in a traceback.
 - PXG-46 — CI installs from `uv.lock` with `uv sync --locked` on every test leg, the lint job and the LibreSprite check, so a lock that disagrees with `pyproject.toml` fails CI; `install-smoke` stays a plain `pip install .`; checkouts no longer keep the token; Dependabot proposes weekly Action and lock updates.
 - Compatibility — pixelgen from cycles 1–3 rejects a `schema_version` 2 sidecar ("this pixelgen reads 1"), and so rejects `last.json` too; cycle 4 reads versions 1 and 2.

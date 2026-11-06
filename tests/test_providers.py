@@ -158,10 +158,10 @@ def test_registry_carries_provider_config():
     assert provider_for("diffusion") is providers.DIFFUSION_STUB
     assert uses_transport("llm-grid") is False
     assert uses_transport("diffusion") is False
-    assert base.available_backends() == ["diffusion", "llm-grid"]
+    assert base.available_backends() == ["diffusion", "llm-grid", "openrouter"]
     with pytest.raises(BackendUnavailableError) as exc:
         provider_for("nope")
-    assert "unknown backend 'nope'; available: diffusion, llm-grid" in str(exc.value)
+    assert "unknown backend 'nope'; available: diffusion, llm-grid, openrouter" in str(exc.value)
 
 
 def test_required_keys(monkeypatch):

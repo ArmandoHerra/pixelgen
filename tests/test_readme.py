@@ -28,6 +28,7 @@ import pixelgen.export as export
 import pixelgen.llm as llm
 import pixelgen.palettes as palettes
 import pixelgen.presets as presets
+from pixelgen import providers
 from pixelgen.cli import app
 from pixelgen.providers import ProviderConfig
 
@@ -322,9 +323,17 @@ def test_install_section_covers_pip_pipx_and_uv():
 
 def test_env_var_table_matches_code(monkeypatch, tmp_path):
     rows = {_unticked(c[0]): c for c in _table(_section("Configuration"))}
-    assert set(rows) == {"ANTHROPIC_API_KEY", "PIXELGEN_MODEL", "PIXELGEN_HOME"}
+    assert set(rows) == {
+        "ANTHROPIC_API_KEY",
+        "PIXELGEN_MODEL",
+        "PIXELGEN_HOME",
+        "OPENROUTER_API_KEY",
+        "PIXELGEN_OPENROUTER_MODEL",
+    }
     assert _unticked(rows["PIXELGEN_MODEL"][2]) == llm.DEFAULT_MODEL
     assert _unticked(rows["ANTHROPIC_API_KEY"][1]).startswith("yes")
+    assert _unticked(rows["OPENROUTER_API_KEY"][1]).startswith("yes")
+    assert _unticked(rows["PIXELGEN_OPENROUTER_MODEL"][2]) == providers.OPENROUTER.default_model
     home = tmp_path / "h"
     monkeypatch.delenv("PIXELGEN_HOME", raising=False)
     monkeypatch.setenv("HOME", str(home))
@@ -332,6 +341,25 @@ def test_env_var_table_matches_code(monkeypatch, tmp_path):
         config.pixelgen_home().relative_to(home)
     )
     assert config.pixelgen_home() == home / ".pixelgen"
+
+
+@pytest.fixture
+def _no_openrouter_model(monkeypatch):
+    monkeypatch.delenv("PIXELGEN_OPENROUTER_MODEL", raising=False)
+
+
+def test_image_providers_section_matches_code(_no_openrouter_model):
+    text = _section("Image providers", level=3, text=_section("Configuration"))
+    for needle in (
+        "--backend openrouter",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "credit limit",
+        "refine",
+        providers.OPENROUTER.default_model,
+    ):
+        assert needle in text, f"### Image providers does not mention {needle!r}"
+    assert "|" not in text
 
 
 # --- AC7 ---------------------------------------------------------------------------------------

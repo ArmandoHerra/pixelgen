@@ -93,6 +93,14 @@ ANTHROPIC = ProviderConfig(
 )
 SPEC_LLM_PROVIDER = ANTHROPIC
 DIFFUSION_STUB = ProviderConfig("diffusion", None, None, None, None, "images")
+OPENROUTER = ProviderConfig(
+    "openrouter",
+    "OPENROUTER_API_KEY",
+    "openai/gpt-image-2",
+    "PIXELGEN_OPENROUTER_MODEL",
+    "https://openrouter.ai/api/v1",
+    "images",
+)
 
 
 def resolve_model(config: ProviderConfig, environ: Mapping[str, str] | None = None) -> str | None:

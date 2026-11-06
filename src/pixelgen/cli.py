@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from pixelgen import __version__, palettes, pipeline, presets, providers
-from pixelgen.backends.base import available_backends, uses_transport
+from pixelgen.backends.base import available_backends, check_backend_env, uses_transport
 from pixelgen.errors import MissingAPIKeyError, PixelgenError, SpecError
 from pixelgen.export import load_sidecar
 from pixelgen.llm import AnthropicLLM
@@ -360,6 +360,7 @@ def generate(
             usage_error(
                 f"unknown backend '{backend}'; available: {', '.join(available_backends())}"
             )
+        check_backend_env(backend)
         if output is not None and output.is_dir():
             usage_error(f"--output '{output}' is a directory; pass a file path")
         if size is not None:

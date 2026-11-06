@@ -27,7 +27,7 @@ from pixelgen.palettes import load_palette
 runner = CliRunner()
 
 L1 = "pixelgen: error: ANTHROPIC_API_KEY is not set. Export your Anthropic API key and try again.\n"
-L3 = "pixelgen: error: unknown backend 'nope'; available: diffusion, llm-grid\n"
+L3 = "pixelgen: error: unknown backend 'nope'; available: diffusion, llm-grid, openrouter\n"
 L4 = (
     "pixelgen: error: The diffusion backend is not implemented in this version of pixelgen; "
     "use --backend llm-grid (the default).\n"

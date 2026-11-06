@@ -138,6 +138,16 @@ pixelgen still reads version 1 sidecars written before cycle 4, so `refine --fro
 | `ANTHROPIC_API_KEY` | yes, for `generate` and `refine` only | — | Your Anthropic API key. Never printed or written to disk. |
 | `PIXELGEN_MODEL` | no | `claude-sonnet-5-5` | Anthropic model id used for inference, drawing and refining. |
 | `PIXELGEN_HOME` | no | `~/.pixelgen` | Directory that holds `last.json`, the pointer `refine` follows. |
+| `OPENROUTER_API_KEY` | yes, for `--backend openrouter` only | — | Your OpenRouter API key. Never printed or written to disk. |
+| `PIXELGEN_OPENROUTER_MODEL` | no | `openai/gpt-image-2` | OpenRouter image model id used by `--backend openrouter`. |
+
+### Image providers
+
+`--backend openrouter` asks OpenRouter (model `openai/gpt-image-2` unless `PIXELGEN_OPENROUTER_MODEL` says otherwise) for one 1024×1024 low-quality image, crops it to the aspect of your size, and pixelates it to your palette and size. It needs `ANTHROPIC_API_KEY` (the prompt is still turned into a spec by the Anthropic model) and `OPENROUTER_API_KEY`. A missing key, or a `PIXELGEN_OPENROUTER_MODEL` that is not an `<author>/<model>` id, is refused before any call is made.
+
+The request makes at most 3 attempts on network and server errors, and OpenRouter bills per image on top of the Anthropic call. Use a separate OpenRouter key for pixelgen and give it its own credit limit.
+
+`refine` never calls the image provider: it edits the saved grid through the Anthropic model and needs only `ANTHROPIC_API_KEY`.
 
 ## Palettes and presets
 
