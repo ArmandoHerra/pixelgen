@@ -182,8 +182,12 @@ def test_sidecar_keys_and_types(tmp_path):
         "backend",
         "token_usage",
         "outputs",
+        "provider",
+        "provider_model",
+        "usage",
+        "dropped_fields",
     ]
-    assert data["schema_version"] == 1 and type(data["schema_version"]) is int
+    assert data["schema_version"] == 2 and type(data["schema_version"]) is int
     assert data["pixelgen_version"] == importlib.metadata.version("pixelgen")
     assert data["created_at"] == "2026-10-28T12:00:00Z"
     assert data["palette"] == {"name": "pico8", "colors": ["ff0000", "00ff00", "0000ff"]}
@@ -224,7 +228,7 @@ def _good_sidecar_dict(tmp_path) -> dict:
     "case",
     [
         "version-missing",
-        "version-2",
+        "version-3",
         "version-str",
         "version-true",
         "version-0",
@@ -240,7 +244,7 @@ def test_load_sidecar_rejects(tmp_path, case):
     path = tmp_path / "bad.json"
     data = _good_sidecar_dict(tmp_path)
     version_cases = {
-        "version-2": 2,
+        "version-3": 3,
         "version-str": "1",
         "version-true": True,
         "version-0": 0,
@@ -315,7 +319,7 @@ def test_last_json_written_and_survives_move(tmp_path):
     assert result.last_path == pixelgen_home() / "last.json"
     wrapper = json.loads(result.last_path.read_text(encoding="utf-8"))
     assert wrapper == {
-        "schema_version": 1,
+        "schema_version": 2,
         "sidecar_path": str(result.sidecar_path),
         "sidecar": json.loads(result.sidecar_path.read_text(encoding="utf-8")),
     }

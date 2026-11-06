@@ -33,7 +33,12 @@ from pixelgen.config import pixelgen_home
 from pixelgen.errors import AsepriteError, NoPreviousResultError, OutputExistsError, SpecError
 from pixelgen.spec import ArtSpec
 
-SIDECAR_SCHEMA_VERSION: Final[int] = 1
+SIDECAR_SCHEMA_VERSION: Final[int] = 2
+SUPPORTED_SCHEMA_VERSIONS: Final[tuple[int, ...]] = (1, 2)
+# Duplicates providers.USAGE_UNITS on purpose: export must not import providers (a test pins both).
+USAGE_STEPS: Final = ("infer_spec", "generate", "refine")
+USAGE_UNITS: Final = ("tokens", "images", "calls")
+V2_KEYS: Final = ("provider", "provider_model", "usage", "dropped_fields")
 
 _HEX6 = re.compile(r"^[0-9a-f]{6}$")
 
@@ -44,6 +49,36 @@ class TokenUsage(BaseModel):
     input_tokens: NonNegativeInt = 0
     output_tokens: NonNegativeInt = 0
     calls: NonNegativeInt = 0
+
+
+class UsageRecord(BaseModel):
+    """What one pipeline step used, in the provider's own unit (v2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    step: Literal["infer_spec", "generate", "refine"]
+    provider: str
+    model: str | None
+    unit: Literal["tokens", "images", "calls"]
+    calls: NonNegativeInt
+    quantity: NonNegativeInt
+
+    @field_validator("provider")
+    @classmethod
+    def _provider_not_empty(cls, value: str) -> str:
+        if not value:
+            raise ValueError("must not be empty")
+        return value
+
+
+class DroppedFieldRecord(BaseModel):
+    """One field ``infer_spec`` dropped (B-031), in ``InferredSpec.metadata()`` shape."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    reason: str
+    value: str
 
 
 class PaletteInfo(BaseModel):
@@ -91,7 +126,7 @@ class OutputNames(BaseModel):
 class Sidecar(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     pixelgen_version: str
     created_at: AwareDatetime
     spec: ArtSpec
@@ -101,6 +136,30 @@ class Sidecar(BaseModel):
     backend: str
     token_usage: TokenUsage
     outputs: OutputNames
+    provider: str | None = None
+    provider_model: str | None = None
+    usage: list[UsageRecord] | None = None
+    dropped_fields: list[DroppedFieldRecord] | None = None
+
+    @model_serializer(mode="wrap")
+    def _v1_omits_v2_keys(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.schema_version == 1:
+            for key in V2_KEYS:
+                data.pop(key, None)
+        return data
+
+    @model_validator(mode="after")
+    def _check_version_keys(self) -> "Sidecar":
+        present = self.model_fields_set
+        for key in V2_KEYS:
+            if self.schema_version == 1 and key in present:
+                raise ValueError(f"{key} is not allowed in schema_version 1")
+            if self.schema_version == 2 and key not in present:
+                raise ValueError(f"{key} is required in schema_version 2")
+        if self.schema_version == 2 and self.usage is None:
+            raise ValueError("usage must be a list in schema_version 2")
+        return self
 
     @field_validator("pixelgen_version")
     @classmethod
@@ -265,8 +324,12 @@ def export(
     overwrite: bool = False,
     now: datetime | None = None,
     aseprite: bool = False,
+    provider: str | None = None,
+    provider_model: str | None = None,
+    usage: Sequence[UsageRecord] = (),
+    dropped_fields: Sequence[DroppedFieldRecord] | None = None,
 ) -> ExportResult:
-    """Write the PNG, preview, sidecar and ``last.json`` for one run."""
+    """Write the PNG, preview, sidecar and ``last.json`` for one run (always schema v2)."""
     _validate_arrays(rgba, palette_colors, scale, spec)
     targets = output_paths(output, scale, aseprite=aseprite)
     png_path, preview_path, sidecar_path = targets[:3]
@@ -276,7 +339,7 @@ def export(
     elif now.tzinfo is not None:
         now = now.astimezone(UTC)
     sidecar = Sidecar(
-        schema_version=1,
+        schema_version=SIDECAR_SCHEMA_VERSION,
         pixelgen_version=importlib.metadata.version("pixelgen"),
         created_at=now,
         spec=spec,
@@ -294,6 +357,10 @@ def export(
             scale=scale,
             aseprite=aseprite_path.name if aseprite_path is not None else None,
         ),
+        provider=provider,
+        provider_model=provider_model,
+        usage=list(usage),
+        dropped_fields=list(dropped_fields) if dropped_fields is not None else None,
     )
 
     # Encode before any I/O so a refused palette/grid leaves nothing behind (X-PXG-62.3).
@@ -351,12 +418,13 @@ def _check_version(obj: dict[str, Any], label: str, what: str) -> None:
     if "schema_version" not in obj:
         raise SpecError(f"{label}: {what} has no schema_version")
     version = obj["schema_version"]
-    if type(version) is not int or version != 1:
+    if type(version) is not int or version not in SUPPORTED_SCHEMA_VERSIONS:
         shown = (
             f"<{type(version).__name__}>" if isinstance(version, (list, dict)) else repr(version)
         )
+        supported = ", ".join(str(v) for v in SUPPORTED_SCHEMA_VERSIONS)
         raise SpecError(
-            f"{label}: unsupported {what} schema_version {shown} (this pixelgen reads 1)"
+            f"{label}: unsupported {what} schema_version {shown} (this pixelgen reads {supported})"
         )
 
 
@@ -387,7 +455,7 @@ def _read_json(path: Path, what: str) -> Any:
 
 
 def load_sidecar(path: Path) -> Sidecar:
-    """Read and validate a v1 sidecar; every failure is a one-line ``SpecError``."""
+    """Read and validate a v1 or v2 sidecar; every failure is a one-line ``SpecError``."""
     path = Path(path)
     return _validate_sidecar(_read_json(path, "sidecar"), str(path))
 

@@ -14,7 +14,7 @@ from aseprite_oracle import parse_aseprite, to_sidecar_grid
 import pixelgen.export as export_mod
 from pixelgen import palettes
 from pixelgen.errors import AsepriteError, OutputExistsError, SpecError
-from pixelgen.export import TokenUsage, export, load_last, load_sidecar, output_paths
+from pixelgen.export import Sidecar, TokenUsage, export, load_last, load_sidecar, output_paths
 from pixelgen.spec import ArtSpec
 
 NOW = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
@@ -139,7 +139,7 @@ def test_sidecar_and_last_record_aseprite(tmp_path):
     data = json.loads(result.sidecar_path.read_text())
     assert list(data["outputs"]) == ["png", "preview", "scale", "aseprite"]
     assert data["outputs"]["aseprite"] == "s.aseprite"
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
     assert load_sidecar(result.sidecar_path).outputs.aseprite == "s.aseprite"
     wrapper = json.loads(result.last_path.read_text())
     assert wrapper["sidecar"]["outputs"]["aseprite"] == "s.aseprite"
@@ -246,21 +246,32 @@ def _replay(sidecar_path: Path, out: Path, **kw):
     return side, result
 
 
+def v1_projection(produced: bytes) -> bytes:
+    """A re-export now writes v2; drop the four v2 keys to compare with the committed v1 file."""
+    data = json.loads(produced)
+    assert data["schema_version"] == 2
+    for key in ("provider", "provider_model", "usage", "dropped_fields"):
+        del data[key]
+    data["schema_version"] = 1
+    return (Sidecar.model_validate(data).model_dump_json(indent=2) + "\n").encode("utf-8")
+
+
 @pytest.mark.parametrize("stem", sorted(PINNED))
 def test_flag_off_bytes_frozen(tmp_path, stem):
     committed_path = next(EXAMPLES.glob(f"*/{stem}.json"))
     committed = committed_path.read_bytes()
     assert hashlib.sha256(committed).hexdigest() == PINNED[stem]
     _, result = _replay(committed_path, tmp_path / stem / stem)
-    produced = result.sidecar_path.read_bytes()
+    produced_v2 = result.sidecar_path.read_bytes()
+    produced = v1_projection(produced_v2)
     assert hashlib.sha256(produced).hexdigest() == PINNED[stem]
     assert produced == committed
     expected_last = (
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "sidecar_path": str(result.sidecar_path),
-                "sidecar": json.loads(committed),
+                "sidecar": json.loads(produced_v2),
             },
             indent=2,
         )
@@ -292,7 +303,7 @@ def test_examples_replay_through_oracle(tmp_path):
         assert [f"{r:02x}{g:02x}{b:02x}" for r, g, b, _ in ase.palette[:n]] == side.palette.colors
         expected = json.loads(committed_path.read_text())
         expected["outputs"]["aseprite"] = f"{stem}.aseprite"
-        assert json.loads(result.sidecar_path.read_text()) == expected
+        assert json.loads(v1_projection(result.sidecar_path.read_bytes())) == expected
 
 
 # --- AC13 ---------------------------------------------------------------------------------

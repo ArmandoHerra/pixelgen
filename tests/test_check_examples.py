@@ -322,7 +322,7 @@ def test_sidecar_loads_with_refine_reader(root):
     slug_dir = make_example(root)
     path = slug_dir / f"{SLUG}.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["schema_version"] = 2
+    data["schema_version"] = 3
     path.write_text(json.dumps(data), encoding="utf-8")
     assert_single_fail(run_checker(root), root, f"{SLUG}/{SLUG}.json", "sidecar rejected")
 
@@ -472,7 +472,7 @@ def test_stray_file_still_found_when_sidecar_fails_to_load(root):
     slug_dir = make_example(root)
     path = slug_dir / f"{SLUG}.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["schema_version"] = 2
+    data["schema_version"] = 3
     path.write_text(json.dumps(data), encoding="utf-8")
     (slug_dir / "debug.log").write_text("noise\n", encoding="utf-8")
     proc = run_checker(root)

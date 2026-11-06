@@ -331,8 +331,8 @@ def test_refine_source_errors(h, case):
     elif case == "d":
         src = h.seed("knight")
         data = json.loads(src.read_text())
-        data["schema_version"] = 2
-        from_ = h.tmp / "v2schema.json"
+        data["schema_version"] = 3
+        from_ = h.tmp / "v3schema.json"
         from_.write_text(json.dumps(data))
     elif case == "e":
         home = load_last_path().parent

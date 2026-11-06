@@ -12,14 +12,16 @@ import os
 import re
 import stat
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
+from pixelgen import providers
 from pixelgen.aseprite import MAX_ASEPRITE_COLOURS
+from pixelgen.backends import base
 from pixelgen.backends.base import Generator, create_generator
 from pixelgen.config import pixelgen_home
 from pixelgen.errors import (
@@ -30,9 +32,12 @@ from pixelgen.errors import (
     PixelgenError,
 )
 from pixelgen.export import (
+    USAGE_UNITS,
+    DroppedFieldRecord,
     ExportResult,
     Sidecar,
     TokenUsage,
+    UsageRecord,
     export,
     load_last,
     load_sidecar,
@@ -51,6 +56,7 @@ SLUG_MAX = 48
 FALLBACK_SLUG = "pixelgen"
 MAX_COLLISION_INDEX = 9999
 DEFAULT_OUT_DIR = Path("out")
+SPEC_LLM_PROVIDER: Final = "anthropic"  # the spec LLM is AnthropicLLM today (R-11 generalises it)
 REFINE_BACKEND = "llm-grid"  # refine stays on llm-grid whatever produced the source (X-PXG-97)
 
 
@@ -212,6 +218,43 @@ def to_token_usage(*usages: Any) -> TokenUsage:
     return TokenUsage(input_tokens=inputs, output_tokens=outputs, calls=calls)
 
 
+def to_usage_record(
+    step: str, *, provider: str, model: str | None, unit: str, usage: Any
+) -> UsageRecord:
+    """One v2 usage record: ``tokens`` bills input + output tokens, any other unit bills calls."""
+    calls = int(getattr(usage, "calls", 1))
+    quantity = int(usage.input_tokens) + int(usage.output_tokens) if unit == "tokens" else calls
+    return UsageRecord.model_validate(
+        {
+            "step": step,
+            "provider": provider,
+            "model": model,
+            "unit": unit,
+            "calls": calls,
+            "quantity": quantity,
+        }
+    )
+
+
+def _step_identity(backend_name: str, generator: Any, llm: Any) -> tuple[str, str | None, str]:
+    """``(provider, provider_model, unit)`` for the generate step; refuses an unknown unit.
+
+    Reads the backend's ``ProviderConfig`` only for names and units, never a key value.
+    """
+    if backend_name in INDEX_GRID_BACKENDS:
+        return SPEC_LLM_PROVIDER, getattr(llm, "model", None), "tokens"
+    config = base.provider_for(backend_name)
+    if config.usage_units not in USAGE_UNITS:
+        raise PixelgenError(
+            f"backend '{backend_name}' reports usage in unit '{config.usage_units}'; "
+            f"expected one of {', '.join(USAGE_UNITS)}"
+        )
+    model = getattr(generator, "model", None)
+    if model is None:
+        model = providers.resolve_model(config)
+    return config.name, model, config.usage_units
+
+
 def render_grid(
     spec: ArtSpec,
     grid: Any,
@@ -224,6 +267,10 @@ def render_grid(
     model: str | None,
     token_usage: TokenUsage,
     aseprite: bool = False,
+    provider: str | None = None,
+    provider_model: str | None = None,
+    usage: Sequence[UsageRecord] = (),
+    dropped_fields: Sequence[DroppedFieldRecord] | None = None,
 ) -> PipelineResult:
     """grid -> RGBA -> ``pixelate()`` -> export. PXG-12 calls this unchanged."""
     rgba = grid_to_rgba(np.asarray(grid), palette_colors)
@@ -243,6 +290,10 @@ def render_grid(
         scale=scale,
         overwrite=overwrite,
         aseprite=aseprite,
+        provider=provider,
+        provider_model=provider_model,
+        usage=usage,
+        dropped_fields=dropped_fields,
     )
     return PipelineResult(spec=spec, grid=grid, image=image, export=result)
 
@@ -259,6 +310,10 @@ def render_result(
     model: str | None,
     token_usage: TokenUsage,
     aseprite: bool = False,
+    provider: str | None = None,
+    provider_model: str | None = None,
+    usage: Sequence[UsageRecord] = (),
+    dropped_fields: Sequence[DroppedFieldRecord] | None = None,
 ) -> PipelineResult:
     """Render a ``GenerationResult``: an index grid via ``render_grid``, a raster via D4.
 
@@ -278,6 +333,10 @@ def render_result(
             model=model,
             token_usage=token_usage,
             aseprite=aseprite,
+            provider=provider,
+            provider_model=provider_model,
+            usage=usage,
+            dropped_fields=dropped_fields,
         )
     indexed = pixelate_raster(generated.image, spec, palette_colors)
     grid = rgba_to_grid(indexed, palette_colors).tolist()
@@ -298,6 +357,10 @@ def render_result(
         scale=scale,
         overwrite=overwrite,
         aseprite=aseprite,
+        provider=provider,
+        provider_model=provider_model,
+        usage=usage,
+        dropped_fields=dropped_fields,
     )
     return PipelineResult(spec=spec, grid=grid, image=image, export=result)
 
@@ -317,12 +380,36 @@ def run_generate(
     on_spec: Callable[[ArtSpec], None] | None = None,
     aseprite: bool = False,
 ) -> PipelineResult:
+    # Decided before any spend: a unit outside USAGE_UNITS refuses here (X-PXG-62).
+    provider, provider_model, unit = _step_identity(backend_name, generator, llm)
     spec, inferred = build_spec(prompt, preset_name, cli_overrides, llm, aseprite=aseprite)
     palette = load_palette(spec.palette)
     if on_spec is not None:
         on_spec(spec)
     generated = generator.generate(spec, palette)
     usages = [generated.usage] if inferred is None else [inferred.usage, generated.usage]
+    llm_model = getattr(llm, "model", None)
+    records: list[UsageRecord] = []
+    if inferred is not None:
+        records.append(
+            to_usage_record(
+                "infer_spec",
+                provider=SPEC_LLM_PROVIDER,
+                model=llm_model,
+                unit="tokens",
+                usage=inferred.usage,
+            )
+        )
+    records.append(
+        to_usage_record(
+            "generate", provider=provider, model=provider_model, unit=unit, usage=generated.usage
+        )
+    )
+    dropped = (
+        [DroppedFieldRecord.model_validate(d) for d in inferred.metadata()["dropped"]]
+        if inferred is not None
+        else None
+    )
     if output is None:  # callers that did not preflight resolve the default name here
         output = next_free_output(out_dir, slugify_prompt(prompt), scale, aseprite=aseprite)
         overwrite = False
@@ -334,9 +421,13 @@ def run_generate(
         scale=scale,
         overwrite=overwrite,
         backend=backend_name,
-        model=getattr(llm, "model", None),
+        model=llm_model,
         token_usage=to_token_usage(*usages),
         aseprite=aseprite,
+        provider=provider,
+        provider_model=provider_model,
+        usage=records,
+        dropped_fields=dropped,
     )
 
 
@@ -422,5 +513,17 @@ def run_refine(
         model=getattr(llm, "model", None),
         token_usage=to_token_usage(refined.usage),
         aseprite=aseprite,
+        provider=SPEC_LLM_PROVIDER,
+        provider_model=getattr(llm, "model", None),
+        usage=[
+            to_usage_record(
+                "refine",
+                provider=SPEC_LLM_PROVIDER,
+                model=getattr(llm, "model", None),
+                unit="tokens",
+                usage=refined.usage,
+            )
+        ],
+        dropped_fields=None,
     )
     return RefineOutcome(result=result, ignored=ignored)

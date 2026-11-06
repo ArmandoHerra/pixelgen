@@ -110,7 +110,7 @@ def test_cli_raster_writes_palette_exact_outputs(rh, tmp_path, flags, dither, si
     assert preview.tobytes() == np.repeat(np.repeat(png, 8, axis=0), 8, axis=1).tobytes()
 
     sc = load_sidecar(rh.out / "x.json")
-    assert sc.schema_version == 1
+    assert sc.schema_version == 2
     assert sc.backend == "fake-raster"
     assert sc.spec.dither == dither
 

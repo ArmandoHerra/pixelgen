@@ -162,7 +162,7 @@ def test_fake_provider_generate_end_to_end(ch, fake_registered, monkeypatch):
     assert len(opaque) > 0
     assert {tuple(int(v) for v in px[:3]) for px in opaque} <= pal
     sc = load_sidecar(ch.out / "x.json")
-    assert (sc.backend, sc.model, sc.schema_version) == ("fake-image", "fake-model", 1)
+    assert (sc.backend, sc.model, sc.schema_version) == ("fake-image", "fake-model", 2)
     assert ch.llm.call_count == 1
     assert ch.make_transport_calls == 1 and ch.transport.call_count == 1
     call = ch.transport.calls[0]
