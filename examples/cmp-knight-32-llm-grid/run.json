@@ -1,0 +1,62 @@
+{
+  "run_record_version": 2,
+  "slug": "cmp-knight-32-llm-grid",
+  "pair": "cmp-knight-32",
+  "steps": [
+    {
+      "kind": "generate",
+      "approval": "spend",
+      "command": "pixelgen generate \"a tiny knight with a red cape\" --size 32 --palette pico8 --backend llm-grid -o examples/cmp-knight-32-llm-grid/cmp-knight-32-llm-grid.png",
+      "prompt": "a tiny knight with a red cape",
+      "backend": "llm-grid",
+      "model": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "provider_model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-11-07T01:42:18.621877Z",
+      "sidecar": "cmp-knight-32-llm-grid.json",
+      "usage_records": [
+        {
+          "step": "infer_spec",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 573
+        },
+        {
+          "step": "generate",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 6613
+        }
+      ],
+      "costs": [
+        {
+          "provider": "anthropic",
+          "unit": "tokens",
+          "steps": [
+            "infer_spec",
+            "generate"
+          ],
+          "input_tokens": 992,
+          "output_tokens": 6194,
+          "prices_usd_per_mtok": {
+            "input_tokens": 2.0,
+            "output_tokens": 10.0
+          },
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "sidecar-tokens-x-price",
+          "cost_usd": 0.063924
+        }
+      ],
+      "cost_usd": 0.063924,
+      "estimate_usd": 0.0753,
+      "worst_usd": 1.03104,
+      "cap_usd": 1.05,
+      "notes": ""
+    }
+  ]
+}

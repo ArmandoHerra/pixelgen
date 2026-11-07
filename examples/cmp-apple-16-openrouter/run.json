@@ -1,0 +1,80 @@
+{
+  "run_record_version": 2,
+  "slug": "cmp-apple-16-openrouter",
+  "pair": "cmp-apple-16",
+  "steps": [
+    {
+      "kind": "generate",
+      "approval": "calibration",
+      "command": "pixelgen generate \"a red apple\" --size 16 --palette pico8 --backend openrouter -o examples/cmp-apple-16-openrouter/cmp-apple-16-openrouter.png",
+      "prompt": "a red apple",
+      "backend": "openrouter",
+      "model": "claude-sonnet-5-5",
+      "provider": "openrouter",
+      "provider_model": "openai/gpt-image-2",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-11-07T01:09:00.851898Z",
+      "sidecar": "cmp-apple-16-openrouter.json",
+      "usage_records": [
+        {
+          "step": "infer_spec",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 547
+        },
+        {
+          "step": "generate",
+          "provider": "openrouter",
+          "model": "openai/gpt-image-2",
+          "unit": "images",
+          "calls": 1,
+          "quantity": 1
+        }
+      ],
+      "costs": [
+        {
+          "provider": "anthropic",
+          "unit": "tokens",
+          "steps": [
+            "infer_spec"
+          ],
+          "input_tokens": 534,
+          "output_tokens": 13,
+          "prices_usd_per_mtok": {
+            "input_tokens": 2.0,
+            "output_tokens": 10.0
+          },
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "sidecar-tokens-x-price",
+          "cost_usd": 0.001198
+        },
+        {
+          "provider": "openrouter",
+          "unit": "images",
+          "steps": [
+            "generate"
+          ],
+          "calls": 1,
+          "key_usage_before_usd": 0,
+          "key_usage_after_usd": 0.006075,
+          "metered_usd": 0.006075,
+          "price_per_image_usd": 0.006,
+          "expected_usd": 0.006,
+          "cross_check": "match",
+          "credit_fee_pct": 8.5,
+          "credit_fee_read_on": "2026-11-06",
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "openrouter-key-usage",
+          "cost_usd": 0.006591
+        }
+      ],
+      "cost_usd": 0.007789,
+      "estimate_usd": 0.0104,
+      "worst_usd": 0.99465,
+      "cap_usd": 1.0,
+      "notes": "key usage read on the stage-1 OpenRouter key (later replaced)"
+    }
+  ]
+}

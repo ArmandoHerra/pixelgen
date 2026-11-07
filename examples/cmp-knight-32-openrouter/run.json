@@ -1,0 +1,80 @@
+{
+  "run_record_version": 2,
+  "slug": "cmp-knight-32-openrouter",
+  "pair": "cmp-knight-32",
+  "steps": [
+    {
+      "kind": "generate",
+      "approval": "spend",
+      "command": "pixelgen generate \"a tiny knight with a red cape\" --size 32 --palette pico8 --backend openrouter -o examples/cmp-knight-32-openrouter/cmp-knight-32-openrouter.png",
+      "prompt": "a tiny knight with a red cape",
+      "backend": "openrouter",
+      "model": "claude-sonnet-5-5",
+      "provider": "openrouter",
+      "provider_model": "openai/gpt-image-2",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-11-07T01:43:31.797759Z",
+      "sidecar": "cmp-knight-32-openrouter.json",
+      "usage_records": [
+        {
+          "step": "infer_spec",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 573
+        },
+        {
+          "step": "generate",
+          "provider": "openrouter",
+          "model": "openai/gpt-image-2",
+          "unit": "images",
+          "calls": 1,
+          "quantity": 1
+        }
+      ],
+      "costs": [
+        {
+          "provider": "anthropic",
+          "unit": "tokens",
+          "steps": [
+            "infer_spec"
+          ],
+          "input_tokens": 541,
+          "output_tokens": 32,
+          "prices_usd_per_mtok": {
+            "input_tokens": 2.0,
+            "output_tokens": 10.0
+          },
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "sidecar-tokens-x-price",
+          "cost_usd": 0.001402
+        },
+        {
+          "provider": "openrouter",
+          "unit": "images",
+          "steps": [
+            "generate"
+          ],
+          "calls": 1,
+          "key_usage_before_usd": 0.01218,
+          "key_usage_after_usd": 0.01828,
+          "metered_usd": 0.0061,
+          "price_per_image_usd": 0.006,
+          "expected_usd": 0.006,
+          "cross_check": "match",
+          "credit_fee_pct": 8.5,
+          "credit_fee_read_on": "2026-11-06",
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "openrouter-key-usage",
+          "cost_usd": 0.006619
+        }
+      ],
+      "cost_usd": 0.008021,
+      "estimate_usd": 0.0104,
+      "worst_usd": 0.27957,
+      "cap_usd": 0.3,
+      "notes": "key usage read on the stage-2 dedicated OpenRouter key ($1.00 limit), usage 0 at stage start"
+    }
+  ]
+}

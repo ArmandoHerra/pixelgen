@@ -1,0 +1,62 @@
+{
+  "run_record_version": 2,
+  "slug": "cmp-apple-32-llm-grid",
+  "pair": "cmp-apple-32",
+  "steps": [
+    {
+      "kind": "generate",
+      "approval": "spend",
+      "command": "pixelgen generate \"a red apple\" --size 32 --palette pico8 --backend llm-grid -o examples/cmp-apple-32-llm-grid/cmp-apple-32-llm-grid.png",
+      "prompt": "a red apple",
+      "backend": "llm-grid",
+      "model": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "provider_model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-11-07T01:34:53.276982Z",
+      "sidecar": "cmp-apple-32-llm-grid.json",
+      "usage_records": [
+        {
+          "step": "infer_spec",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 547
+        },
+        {
+          "step": "generate",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 4601
+        }
+      ],
+      "costs": [
+        {
+          "provider": "anthropic",
+          "unit": "tokens",
+          "steps": [
+            "infer_spec",
+            "generate"
+          ],
+          "input_tokens": 977,
+          "output_tokens": 4171,
+          "prices_usd_per_mtok": {
+            "input_tokens": 2.0,
+            "output_tokens": 10.0
+          },
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "sidecar-tokens-x-price",
+          "cost_usd": 0.043664
+        }
+      ],
+      "cost_usd": 0.043664,
+      "estimate_usd": 0.0753,
+      "worst_usd": 1.03104,
+      "cap_usd": 1.05,
+      "notes": ""
+    }
+  ]
+}

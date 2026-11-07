@@ -46,6 +46,19 @@ Real output from the default model, with the exact commands and token costs reco
 | ![a tiny knight with a red cape](examples/knight/knight@8x.png) | `pixelgen generate "a tiny knight with a red cape" --size 32 --palette pico8 -o examples/knight/knight.png` |
 | ![the knight refined: blue cape and a sword](examples/knight/knight-v2@8x.png) | `pixelgen refine "make the cape blue and add a sword" --from examples/knight/knight.json` |
 
+### Provider comparison
+
+The same three prompts at 16 and 32 px through `--backend llm-grid` and `--backend openrouter`; the commands, measured costs and notes are in [`examples/README.md`](examples/README.md).
+
+| Prompt | Size | llm-grid | openrouter |
+|--------|------|----------|------------|
+| a red apple | 16 | ![a red apple, 16 px, llm-grid](examples/cmp-apple-16-llm-grid/cmp-apple-16-llm-grid@8x.png) | ![a red apple, 16 px, openrouter](examples/cmp-apple-16-openrouter/cmp-apple-16-openrouter@8x.png) |
+| a red apple | 32 | ![a red apple, 32 px, llm-grid](examples/cmp-apple-32-llm-grid/cmp-apple-32-llm-grid@8x.png) | ![a red apple, 32 px, openrouter](examples/cmp-apple-32-openrouter/cmp-apple-32-openrouter@8x.png) |
+| a tiny knight with a red cape | 16 | ![a tiny knight with a red cape, 16 px, llm-grid](examples/cmp-knight-16-llm-grid/cmp-knight-16-llm-grid@8x.png) | ![a tiny knight with a red cape, 16 px, openrouter](examples/cmp-knight-16-openrouter/cmp-knight-16-openrouter@8x.png) |
+| a tiny knight with a red cape | 32 | ![a tiny knight with a red cape, 32 px, llm-grid](examples/cmp-knight-32-llm-grid/cmp-knight-32-llm-grid@8x.png) | ![a tiny knight with a red cape, 32 px, openrouter](examples/cmp-knight-32-openrouter/cmp-knight-32-openrouter@8x.png) |
+| slime enemy | 16 | ![slime enemy, 16 px, llm-grid](examples/cmp-slime-16-llm-grid/cmp-slime-16-llm-grid@8x.png) | ![slime enemy, 16 px, openrouter](examples/cmp-slime-16-openrouter/cmp-slime-16-openrouter@8x.png) |
+| slime enemy | 32 | ![slime enemy, 32 px, llm-grid](examples/cmp-slime-32-llm-grid/cmp-slime-32-llm-grid@8x.png) | ![slime enemy, 32 px, openrouter](examples/cmp-slime-32-openrouter/cmp-slime-32-openrouter@8x.png) |
+
 ## Commands
 
 `pixelgen --help` lists the commands. Every command accepts `--help`.

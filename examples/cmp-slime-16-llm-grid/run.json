@@ -1,0 +1,62 @@
+{
+  "run_record_version": 2,
+  "slug": "cmp-slime-16-llm-grid",
+  "pair": "cmp-slime-16",
+  "steps": [
+    {
+      "kind": "generate",
+      "approval": "spend",
+      "command": "pixelgen generate \"slime enemy\" --size 16 --palette pico8 --backend llm-grid -o examples/cmp-slime-16-llm-grid/cmp-slime-16-llm-grid.png",
+      "prompt": "slime enemy",
+      "backend": "llm-grid",
+      "model": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "provider_model": "claude-sonnet-5-5",
+      "pixelgen_version": "0.1.0",
+      "ran_at": "2026-11-07T01:45:45.707646Z",
+      "sidecar": "cmp-slime-16-llm-grid.json",
+      "usage_records": [
+        {
+          "step": "infer_spec",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 550
+        },
+        {
+          "step": "generate",
+          "provider": "anthropic",
+          "model": "claude-sonnet-5-5",
+          "unit": "tokens",
+          "calls": 1,
+          "quantity": 2221
+        }
+      ],
+      "costs": [
+        {
+          "provider": "anthropic",
+          "unit": "tokens",
+          "steps": [
+            "infer_spec",
+            "generate"
+          ],
+          "input_tokens": 980,
+          "output_tokens": 1791,
+          "prices_usd_per_mtok": {
+            "input_tokens": 2.0,
+            "output_tokens": 10.0
+          },
+          "prices_confirmed_on": "2026-11-06",
+          "cost_source": "sidecar-tokens-x-price",
+          "cost_usd": 0.01987
+        }
+      ],
+      "cost_usd": 0.01987,
+      "estimate_usd": 0.0087,
+      "worst_usd": 1.03104,
+      "cap_usd": 1.05,
+      "notes": ""
+    }
+  ]
+}
